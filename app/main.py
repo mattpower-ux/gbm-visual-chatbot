@@ -997,5 +997,44 @@ def magazine_ingest_status(_: str = Depends(admin_auth)) -> dict:
     return read_magazine_ingest_status()
 
 
+# === Draft HTML Upload Endpoint ===
+@app.post("/admin/upload-draft-html")
+async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depends(admin_auth)) -> dict:
+    """Upload saved HubSpot/HTML draft files to /data/draft_html for later ingestion.
+
+    This only stores files. It does not parse them, ingest them, or rebuild the index.
+    """
+    target_dir = Path("/data/draft_html")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for file in files:
+        filename = Path(file.filename or "").name
+
+        if not filename.lower().endswith((".html", ".htm")):
+            skipped.append(filename or "unnamed file")
+            continue
+
+        target = target_dir / filename
+
+        try:
+            with target.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            uploaded.append(filename)
+        except Exception as exc:
+            failed.append({"file": filename, "error": str(exc)})
+
+    return {
+        "ok": len(failed) == 0,
+        "message": f"Uploaded {len(uploaded)} HTML draft file(s) to /data/draft_html.",
+        "files": uploaded,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
 # === Serve Magazine PDFs Already Ingested ===
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
