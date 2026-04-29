@@ -365,13 +365,82 @@ def _asset_safe_name(value: str) -> str:
 def _find_chunk_for_source(source: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, Any]:
     url = str(source.get("url", ""))
     title = str(source.get("title", ""))
+    pdf_filename = str(source.get("pdf_filename", ""))
+
     for chunk in chunks:
-        if url and str(chunk.get("url", "")) == url:
+        chunk_url = str(chunk.get("url", ""))
+        chunk_pdf = str(chunk.get("pdf_filename", ""))
+        if url and chunk_url == url:
             return chunk
+        if pdf_filename and chunk_pdf == pdf_filename:
+            return chunk
+
     for chunk in chunks:
         if title and title in str(chunk.get("title", "")):
             return chunk
     return {}
+
+
+def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
+    url = str(chunk.get("url", ""))
+    source_type = str(chunk.get("source_type", ""))
+    pdf_filename = str(chunk.get("pdf_filename", ""))
+    return (
+        url.startswith("/magazines/")
+        or "/magazines/" in url
+        or source_type == "pdf"
+        or pdf_filename.lower().endswith(".pdf")
+    )
+
+
+def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
+    """Build a public SourceItem from a retrieved PDF chunk.
+
+    This is a fallback safety net: even if a PDF chunk was missed by the normal
+    source-building pass, magazine/PDF chunks should still be allowed to surface
+    because they are public archive material, not private draft material.
+    """
+    if not _is_magazine_chunk(chunk):
+        return None
+
+    visibility = chunk.get("visibility", "public")
+    if visibility != "public":
+        return None
+
+    filename = str(chunk.get("pdf_filename", "")).strip()
+    url = str(chunk.get("url", "")).strip()
+
+    if not url and filename:
+        url = f"/magazines/{filename}"
+    if not url:
+        return None
+
+    clean_title = (
+        chunk.get("source_name")
+        or chunk.get("title")
+        or chunk.get("pdf_filename")
+        or "Green Builder Magazine Archive"
+    )
+
+    page = chunk.get("page")
+    if page is not None:
+        try:
+            clean_title = f"{clean_title} (PDF, p. {int(page)})"
+        except Exception:
+            clean_title = f"{clean_title} (PDF)"
+    elif not str(clean_title).lower().endswith("(pdf)"):
+        clean_title = f"{clean_title} (PDF)"
+
+    return SourceItem(
+        title=str(clean_title),
+        url=url,
+        published_at=chunk.get("published_at"),
+        excerpt=str(chunk.get("text", ""))[:240].strip(),
+        score=float(chunk.get("score", 0.0)),
+        visibility="public",
+        attribution_label="Magazine archive",
+        surface_policy="show_source",
+    )
 
 
 def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -596,7 +665,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             continue
         seen.add(url)
 
-        is_magazine = str(url).startswith("/magazines/") or "/magazines/" in str(url)
+        is_magazine = _is_magazine_chunk(chunk)
 
         if is_magazine:
             clean_title = (
@@ -633,9 +702,22 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             )
         )
 
-    # Ensure at least one magazine PDF source appears if magazine chunks were used.
+    # Ensure magazine PDF sources appear if magazine chunks were used.
+    # This fallback matters because PDFs are public archive content and must not
+    # be hidden like private draft HTML, even when private archive material also
+    # influenced the answer.
     blog_sources = [s for s in sources if not s.url.startswith("/magazines/")]
     pdf_sources = [s for s in sources if s.url.startswith("/magazines/")]
+
+    if not pdf_sources:
+        seen_pdf_urls = {s.url for s in pdf_sources}
+        for chunk in chunks:
+            pdf_source = _magazine_source_from_chunk(chunk)
+            if pdf_source and pdf_source.url not in seen_pdf_urls:
+                pdf_sources.append(pdf_source)
+                seen_pdf_urls.add(pdf_source.url)
+            if len(pdf_sources) >= 3:
+                break
 
     final_sources = blog_sources[:4]
 
