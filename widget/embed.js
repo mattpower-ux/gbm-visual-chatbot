@@ -1,8 +1,8 @@
 (function () {
   const currentScript = document.currentScript;
   const apiBase = (currentScript?.dataset.apiBase || '').replace(/\/$/, '');
-  const title = currentScript?.dataset.chatbotTitle || 'Solar Snoop';
-  const subtitle = currentScript?.dataset.chatbotSubtitle || 'Plan your solar + storage DIY dream';
+  const title = currentScript?.dataset.chatbotTitle || 'GBM Deep Think';
+  const subtitle = currentScript?.dataset.chatbotSubtitle || 'From heat pumps to solar panels to flooring and roofing, we've got answers';
   const builderPhoto = currentScript?.dataset.builderPhoto || '';
 
   if (!apiBase) {
@@ -266,10 +266,10 @@
       </div>
 
       <div class="gbm-input-row">
-        <input class="gbm-input" placeholder="Ask Green Builder about insulation, solar, batteries, or resilient homes..." />
+        <input class="gbm-input" placeholder="Get answers now." />
         <button class="gbm-send">➤</button>
       </div>
-      <div class="gbm-disclaimer">Solar Snoop can make mistakes. Check important info.</div>
+      <div class="gbm-disclaimer">GBM's Alter Ego can make mistakes. Check important info.</div>
     </div>
   `;
 
