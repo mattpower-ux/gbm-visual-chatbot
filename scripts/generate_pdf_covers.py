@@ -74,3 +74,6 @@ def main() -> None:
     print(f"Created: {created}")
     print(f"Skipped existing: {skipped}")
     print(f"Failed: {failed}")
+
+if __name__ == "__main__":
+    main()
