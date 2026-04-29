@@ -393,6 +393,76 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
     )
 
 
+def _is_public_chunk(chunk: dict[str, Any]) -> bool:
+    """Treat missing/blank visibility as public, but suppress private/internal drafts."""
+    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
+    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
+
+
+def _chunk_url(chunk: dict[str, Any]) -> str:
+    """Return a usable source URL, including PDF fallback URLs."""
+    url = str(chunk.get("url", "") or "").strip()
+    if url:
+        return url
+
+    pdf_filename = str(chunk.get("pdf_filename", "") or "").strip()
+    if pdf_filename.lower().endswith(".pdf"):
+        return f"/magazines/{pdf_filename}"
+
+    return ""
+
+
+def _source_item_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
+    """Build a SourceItem from any public retrieved chunk."""
+    if not _is_public_chunk(chunk):
+        return None
+
+    url = _chunk_url(chunk)
+    if not url:
+        return None
+
+    is_magazine = _is_magazine_chunk(chunk)
+
+    if is_magazine:
+        clean_title = (
+            chunk.get("source_name")
+            or chunk.get("title")
+            or chunk.get("pdf_filename")
+            or "Green Builder Magazine Archive"
+        )
+        page = chunk.get("page")
+        if page is not None:
+            try:
+                clean_title = f"{clean_title} (PDF, p. {int(page)})"
+            except Exception:
+                clean_title = f"{clean_title} (PDF)"
+        elif not str(clean_title).lower().endswith("(pdf)"):
+            clean_title = f"{clean_title} (PDF)"
+
+        attribution_label = "Magazine archive"
+        surface_policy = "show_source"
+    else:
+        clean_title = chunk.get("title") or "Green Builder Article"
+        attribution_label = chunk.get("attribution_label") or chunk.get("source_name") or "Green Builder"
+        surface_policy = chunk.get("surface_policy") or "show_source"
+
+    try:
+        score = float(chunk.get("score", 0.0) or 0.0)
+    except Exception:
+        score = 0.0
+
+    return SourceItem(
+        title=str(clean_title),
+        url=url,
+        published_at=chunk.get("published_at"),
+        excerpt=str(chunk.get("text", "") or "")[:240].strip(),
+        score=score,
+        visibility="public",
+        attribution_label=attribution_label,
+        surface_policy=surface_policy,
+    )
+
+
 def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
     """Build a public SourceItem from a retrieved PDF chunk.
 
@@ -647,90 +717,45 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     private_used, attribution_note = summarize_private_usage(chunks)
 
-    # Build clean, deduplicated public source list.
-    # Blogs are deduplicated by URL.
-    # Magazine PDFs are deduplicated by PDF URL so each issue appears only once.
-    seen = set()
-    sources = []
+    # Build clean, deduplicated public source list directly from retrieved chunks.
+    # This uses the same chunks that generated the answer, so the visual UI gets
+    # article cards and magazine cards whenever public sources contributed to the response.
+    # Private draft/archive chunks remain hidden from public source/card output.
+    seen_urls: set[str] = set()
+    sources: list[SourceItem] = []
+
     for chunk in chunks:
-        visibility = chunk.get("visibility", "public")
-        if visibility != "public":
+        source_item = _source_item_from_chunk(chunk)
+        if not source_item:
             continue
 
-        url = chunk.get("url")
-        if not url:
+        if source_item.url in seen_urls:
             continue
 
-        if url in seen:
-            continue
-        seen.add(url)
+        seen_urls.add(source_item.url)
+        sources.append(source_item)
 
-        is_magazine = _is_magazine_chunk(chunk)
+    blog_sources = [
+        s for s in sources
+        if not s.url.startswith("/magazines/") and "/magazines/" not in s.url
+    ]
+    pdf_sources = [
+        s for s in sources
+        if s.url.startswith("/magazines/") or "/magazines/" in s.url
+    ]
 
-        if is_magazine:
-            clean_title = (
-                chunk.get("source_name")
-                or chunk.get("title")
-                or chunk.get("pdf_filename")
-                or "Green Builder Magazine Archive"
-            )
-
-            page = chunk.get("page")
-            if page is not None:
-                try:
-                    clean_title = f"{clean_title} (PDF, p. {int(page)})"
-                except Exception:
-                    clean_title = f"{clean_title} (PDF)"
-            elif not clean_title.lower().endswith("(pdf)"):
-                clean_title = f"{clean_title} (PDF)"
-
-            attribution_label = "Magazine archive"
-        else:
-            clean_title = chunk.get("title", "Untitled")
-            attribution_label = chunk.get("attribution_label")
-
-        sources.append(
-            SourceItem(
-                title=clean_title,
-                url=url,
-                published_at=chunk.get("published_at"),
-                excerpt=chunk.get("text", "")[:240].strip(),
-                score=float(chunk.get("score", 0.0)),
-                visibility=visibility,
-                attribution_label=attribution_label,
-                surface_policy=chunk.get("surface_policy"),
-            )
-        )
-
-    # Ensure magazine PDF sources appear if magazine chunks were used.
-    # This fallback matters because PDFs are public archive content and must not
-    # be hidden like private draft HTML, even when private archive material also
-    # influenced the answer.
-    blog_sources = [s for s in sources if not s.url.startswith("/magazines/")]
-    pdf_sources = [s for s in sources if s.url.startswith("/magazines/")]
-
-    if not pdf_sources:
-        seen_pdf_urls = {s.url for s in pdf_sources}
-        for chunk in chunks:
-            pdf_source = _magazine_source_from_chunk(chunk)
-            if pdf_source and pdf_source.url not in seen_pdf_urls:
-                pdf_sources.append(pdf_source)
-                seen_pdf_urls.add(pdf_source.url)
-            if len(pdf_sources) >= 3:
-                break
-
-    final_sources = blog_sources[:4]
+    final_sources: list[SourceItem] = []
+    final_sources.extend(blog_sources[:5])
 
     if pdf_sources:
         final_sources.append(pdf_sources[0])
 
-    # If no PDF source was used, keep normal top 5 behavior.
-    if not pdf_sources:
-        final_sources = sources[:5]
+    if not final_sources:
+        final_sources = sources[:6]
 
     response = ChatResponse(
         answer=answer,
-        sources=final_sources[:5],
+        sources=final_sources[:6],
         private_archive_used=private_used,
         attribution_note=attribution_note,
     )
