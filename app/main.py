@@ -394,7 +394,15 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
 
 
 def _is_public_chunk(chunk: dict[str, Any]) -> bool:
-    """Treat missing/blank visibility as public, but suppress private/internal drafts."""
+    """Public GBM URLs and magazine PDFs can be surfaced; true private drafts stay hidden."""
+    url = str(chunk.get("url", "") or "").strip()
+
+    if url.startswith("https://www.greenbuildermedia.com/") or url.startswith("https://greenbuildermedia.com/"):
+        return True
+
+    if url.startswith("/magazines/") or "/magazines/" in url:
+        return True
+
     visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
     return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
 
