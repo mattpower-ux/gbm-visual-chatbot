@@ -44,7 +44,13 @@ def stored_image(doc: dict) -> str:
     for key in ["image", "og_image", "featured_image", "thumbnail", "featuredImage"]:
         val = doc.get(key)
         if isinstance(val, str) and val.strip():
-            return val.strip()
+            url = val.strip()
+
+            # FIX: convert relative → absolute
+            if url.startswith("/"):
+                return "https://www.greenbuildermedia.com" + url
+
+            return url
     return ""
 
 
