@@ -3,6 +3,7 @@
   const apiBase = (currentScript?.dataset.apiBase || '').replace(/\/$/, '');
   const title = currentScript?.dataset.chatbotTitle || 'Solar Snoop';
   const subtitle = currentScript?.dataset.chatbotSubtitle || 'Plan your solar + storage DIY dream';
+  const builderPhoto = currentScript?.dataset.builderPhoto || '';
 
   if (!apiBase) {
     console.error('Missing data-api-base');
