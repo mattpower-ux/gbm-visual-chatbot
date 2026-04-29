@@ -10,14 +10,17 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-DOCUMENTS_FILE = Path(os.getenv("DOCUMENTS_FILE", "/data/documents.jsonl"))
-THUMBS_DIR = Path(os.getenv("THUMBS_DIR", "/data/assets/thumbs"))
-MAX_WIDTH = int(os.getenv("BLOG_THUMB_MAX_WIDTH", "640"))
-MAX_HEIGHT = int(os.getenv("BLOG_THUMB_MAX_HEIGHT", "360"))
-JPEG_QUALITY = int(os.getenv("BLOG_THUMB_JPEG_QUALITY", "80"))
+DOCUMENTS_FILE = Path("/data/documents.jsonl")
+THUMBS_DIR = Path("/data/assets/thumbs")
+MAX_WIDTH = 640
+MAX_HEIGHT = 360
+JPEG_QUALITY = 80
+TIMEOUT = 20
 LIMIT = int(os.getenv("BLOG_THUMB_LIMIT", "0"))
-TIMEOUT = int(os.getenv("BLOG_THUMB_TIMEOUT", "15"))
-HEADERS = {"User-Agent": "GreenBuilderMediaBot/1.0 (+https://www.greenbuildermedia.com)"}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
+}
 
 
 def safe_slug_from_url(url: str) -> str:
@@ -27,17 +30,22 @@ def safe_slug_from_url(url: str) -> str:
     return slug or "article"
 
 
-def is_public_blog_record(doc: dict) -> bool:
+def is_blog(doc: dict) -> bool:
     url = str(doc.get("url", ""))
-    visibility = doc.get("visibility", "public")
-    source_type = str(doc.get("source_type", "")).lower()
-
     return (
-        visibility == "public"
+        doc.get("visibility", "public") == "public"
         and url.startswith("http")
         and "/magazines/" not in url
-        and source_type != "pdf"
+        and str(doc.get("source_type", "")).lower() != "pdf"
     )
+
+
+def stored_image(doc: dict) -> str:
+    for key in ["image", "og_image", "featured_image", "thumbnail", "featuredImage"]:
+        val = doc.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
 
 
 def discover_image_url(article_url: str) -> str:
@@ -60,12 +68,12 @@ def discover_image_url(article_url: str) -> str:
             return urljoin(article_url, img["src"].strip())
 
     except Exception as exc:
-        print(f"Image discovery failed for {article_url}: {exc}")
+        print(f"Live page image discovery failed for {article_url}: {exc}")
 
     return ""
 
 
-def download_and_save(image_url: str, out_path: Path) -> bool:
+def save_image(image_url: str, out_path: Path) -> bool:
     try:
         from PIL import Image
 
@@ -85,16 +93,13 @@ def download_and_save(image_url: str, out_path: Path) -> bool:
         return True
 
     except Exception as exc:
-        print(f"Image download/save failed for {image_url}: {exc}")
+        print(f"Image save failed for {image_url}: {exc}")
         return False
 
 
-def load_unique_blog_urls() -> list[str]:
-    urls = []
+def load_records() -> list[dict]:
+    records = []
     seen = set()
-
-    if not DOCUMENTS_FILE.exists():
-        raise FileNotFoundError(f"Could not find {DOCUMENTS_FILE}")
 
     with DOCUMENTS_FILE.open("r", encoding="utf-8") as f:
         for line in f:
@@ -103,7 +108,7 @@ def load_unique_blog_urls() -> list[str]:
             except Exception:
                 continue
 
-            if not is_public_blog_record(doc):
+            if not is_blog(doc):
                 continue
 
             url = str(doc.get("url", "")).strip()
@@ -111,54 +116,50 @@ def load_unique_blog_urls() -> list[str]:
                 continue
 
             seen.add(url)
-            urls.append(url)
+            records.append(doc)
 
-            if LIMIT > 0 and len(urls) >= LIMIT:
+            if LIMIT > 0 and len(records) >= LIMIT:
                 break
 
-    return urls
+    return records
 
 
 def main() -> None:
-    try:
-        import PIL  # noqa
-    except ImportError as exc:
-        raise SystemExit("Missing dependency. Add pillow, beautifulsoup4, and requests to requirements.txt.") from exc
-
     THUMBS_DIR.mkdir(parents=True, exist_ok=True)
-    urls = load_unique_blog_urls()
-    print(f"Found {len(urls)} public blog/article URLs")
+
+    records = load_records()
+    print(f"Found {len(records)} public blog/article records")
 
     created = skipped = failed = no_image = 0
 
-    for idx, url in enumerate(urls, start=1):
-        out_path = THUMBS_DIR / f"{safe_slug_from_url(url)}.jpg"
+    for idx, doc in enumerate(records, start=1):
+        url = str(doc.get("url", ""))
+        slug = safe_slug_from_url(url)
+        out_path = THUMBS_DIR / f"{slug}.jpg"
 
         if out_path.exists() and out_path.stat().st_size > 0:
             skipped += 1
             continue
 
-        print(f"[{idx}/{len(urls)}] {url}")
-        image_url = discover_image_url(url)
+        print(f"[{idx}/{len(records)}] {url}")
+
+        image_url = stored_image(doc)
+
+        if not image_url:
+            image_url = discover_image_url(url)
 
         if not image_url:
             no_image += 1
             print("  No image found.")
             continue
 
-        if download_and_save(image_url, out_path):
+        if save_image(image_url, out_path):
             created += 1
             print(f"  Created thumbnail: {out_path.name}")
         else:
             failed += 1
 
-    print("\n=== BLOG THUMBNAIL GENERATION COMPLETE ===")
-    print(f"Created: {created}")
-    print(f"Skipped existing: {skipped}")
-    print(f"No image found: {no_image}")
-    print(f"Failed: {failed}")
-    print(f"Output folder: {THUMBS_DIR}")
-
-
-if __name__ == "__main__":
-    main()
+    print("Created:", created)
+    print("Skipped existing:", skipped)
+    print("No image found:", no_image)
+    print("Failed:", failed)
