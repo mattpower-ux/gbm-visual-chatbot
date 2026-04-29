@@ -328,8 +328,149 @@ def widget() -> FileResponse:
     return FileResponse(widget_path, media_type="application/javascript")
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+
+def _first_paragraph(text: str) -> str:
+    """Return a compact first paragraph for visual mode."""
+    if not text:
+        return ""
+    parts = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    if not parts:
+        return text.strip()
+    first = parts[0]
+    # Keep the visual opener short enough for card-style UI.
+    if len(first) > 650:
+        sentence_match = re.match(r"^(.{200,650}?[.!?])\s", first + " ")
+        if sentence_match:
+            return sentence_match.group(1).strip()
+        return first[:650].rsplit(" ", 1)[0].strip() + "..."
+    return first
+
+
+def _source_to_dict(source: Any) -> dict[str, Any]:
+    """Convert a SourceItem or dict to a plain JSON-safe dict."""
+    if hasattr(source, "model_dump"):
+        return source.model_dump()
+    if isinstance(source, dict):
+        return dict(source)
+    return {}
+
+
+def _asset_safe_name(value: str) -> str:
+    """Create a predictable filename stem for generated thumbnails/covers."""
+    value = Path(value or "source").name
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
+    return value or "source"
+
+
+def _find_chunk_for_source(source: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    url = str(source.get("url", ""))
+    title = str(source.get("title", ""))
+    for chunk in chunks:
+        if url and str(chunk.get("url", "")) == url:
+            return chunk
+    for chunk in chunks:
+        if title and title in str(chunk.get("title", "")):
+            return chunk
+    return {}
+
+
+def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build visual article cards and magazine cards from public sources."""
+    cards: list[dict[str, Any]] = []
+    magazines: list[dict[str, Any]] = []
+
+    for raw_source in sources:
+        source = _source_to_dict(raw_source)
+        url = str(source.get("url", ""))
+        title = source.get("title") or "Green Builder Media source"
+        excerpt = source.get("excerpt") or ""
+        chunk = _find_chunk_for_source(source, chunks)
+        image = (
+            chunk.get("image")
+            or chunk.get("featured_image")
+            or chunk.get("og_image")
+            or chunk.get("thumbnail")
+            or ""
+        )
+
+        if url.startswith("/magazines/") or "/magazines/" in url or str(source.get("source_type", "")) == "pdf":
+            filename = _asset_safe_name(url)
+            stem = Path(filename).stem
+            magazines.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "cover": f"/assets/covers/{stem}.jpg",
+                    "issue": chunk.get("source_name") or source.get("attribution_label") or "Magazine archive",
+                    "page": chunk.get("page"),
+                    "type": "pdf",
+                    "source": "Green Builder Magazine",
+                    "excerpt": excerpt,
+                }
+            )
+        else:
+            thumb_name = _asset_safe_name(url or title)
+            fallback_image = f"/assets/thumbs/{thumb_name}.jpg"
+            cards.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "source": source.get("attribution_label") or "Green Builder",
+                    "category": chunk.get("category") or source.get("attribution_label") or "Article",
+                    "image": image or fallback_image,
+                    "type": "blog",
+                    "excerpt": excerpt,
+                }
+            )
+
+    return cards[:6], magazines[:3]
+
+
+def _build_key_insights(answer: str) -> list[dict[str, str]]:
+    """Create lightweight insight cards from the generated answer."""
+    text = answer or ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    insights: list[dict[str, str]] = []
+
+    titles = ["Main takeaway", "Practical implication", "Tradeoff to consider"]
+    icons = ["lightbulb", "check-circle", "scale"]
+
+    for idx, paragraph in enumerate(paragraphs[:3]):
+        short = paragraph
+        if len(short) > 260:
+            match = re.match(r"^(.{120,260}?[.!?])\s", short + " ")
+            short = match.group(1).strip() if match else short[:260].rsplit(" ", 1)[0].strip() + "..."
+        insights.append({"title": titles[idx], "text": short, "icon": icons[idx]})
+
+    if not insights and text:
+        insights.append({"title": "Main takeaway", "text": _first_paragraph(text), "icon": "lightbulb"})
+
+    return insights
+
+
+def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Return the backward-compatible answer plus visual-mode fields."""
+    chunks = chunks or []
+    base = response.model_dump()
+    answer = base.get("answer", "") or ""
+    sources = base.get("sources", []) or []
+    cards, magazines = _build_visual_cards(sources, chunks)
+
+    base.update(
+        {
+            "visual_summary": _first_paragraph(answer),
+            "key_insights": _build_key_insights(answer),
+            "cards": cards,
+            "magazines": magazines,
+            "text_only_answer": answer,
+            "ui_mode_default": "visual",
+        }
+    )
+    return base
+
+
+@app.post("/chat")
+def chat(req: ChatRequest) -> dict[str, Any]:
     correction = find_correction(req.question)
     if correction:
         response = ChatResponse(
@@ -354,7 +495,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 "correction_id": correction.get("id"),
             }
         )
-        return response
+        return _chat_payload(response)
 
     try:
         chunks = search(req.question)
@@ -381,7 +522,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                     "private_archive_used": False,
                 }
             )
-            return response
+            return _chat_payload(response)
         raise HTTPException(status_code=500, detail=f"Search failed: {exc}") from exc
 
     future_query = is_future_event_query(req.question)
@@ -408,7 +549,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                     "private_archive_used": False,
                 }
             )
-            return response
+            return _chat_payload(response)
 
     if not chunks:
         response = ChatResponse(
@@ -428,7 +569,7 @@ def chat(req: ChatRequest) -> ChatResponse:
                 "private_archive_used": False,
             }
         )
-        return response
+        return _chat_payload(response)
 
     try:
         answer = answer_question(req.question, chunks)
@@ -526,7 +667,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             "attribution_note": attribution_note,
         }
     )
-    return response
+    return _chat_payload(response, chunks)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1110,5 +1251,9 @@ async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depend
     }
 
 
-# === Serve Magazine PDFs Already Ingested ===
+# === Serve Generated Assets and Magazine PDFs Already Ingested ===
+ASSETS_DIR = Path("/data/assets")
+(ASSETS_DIR / "thumbs").mkdir(parents=True, exist_ok=True)
+(ASSETS_DIR / "covers").mkdir(parents=True, exist_ok=True)
+app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
