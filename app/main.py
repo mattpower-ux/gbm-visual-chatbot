@@ -7,6 +7,7 @@ import re
 import secrets
 import subprocess
 import time
+import zipfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, List
@@ -997,40 +998,113 @@ def magazine_ingest_status(_: str = Depends(admin_auth)) -> dict:
     return read_magazine_ingest_status()
 
 
-# === Draft HTML Upload Endpoint ===
+# === Draft HTML / ZIP Upload Endpoint ===
 @app.post("/admin/upload-draft-html")
 async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depends(admin_auth)) -> dict:
-    """Upload saved HubSpot/HTML draft files to /data/draft_html for later ingestion.
+    """Upload saved HubSpot/HTML draft files or ZIP archives to /data/draft_html.
 
-    This only stores files. It does not parse them, ingest them, or rebuild the index.
+    - Individual .html/.htm files are stored directly.
+    - .zip files are saved temporarily, safely extracted, and then removed.
+    - This only stores/extracts files. It does not parse them, ingest them, or rebuild the index.
     """
     target_dir = Path("/data/draft_html")
     target_dir.mkdir(parents=True, exist_ok=True)
 
     uploaded: list[str] = []
+    extracted: list[str] = []
     skipped: list[str] = []
     failed: list[dict[str, str]] = []
 
-    for file in files:
-        filename = Path(file.filename or "").name
+    def safe_extract_zip(zip_path: Path, destination: Path) -> list[str]:
+        """Extract a ZIP file while preventing path traversal attacks."""
+        extracted_files: list[str] = []
+        destination_resolved = destination.resolve()
 
-        if not filename.lower().endswith((".html", ".htm")):
-            skipped.append(filename or "unnamed file")
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            for member in archive.infolist():
+                member_name = member.filename
+
+                if member.is_dir():
+                    continue
+                if not member_name.lower().endswith((".html", ".htm")):
+                    continue
+
+                # Flatten nested folders so every HTML file lands directly in /data/draft_html.
+                clean_name = Path(member_name).name
+                if not clean_name:
+                    continue
+
+                target_path = destination / clean_name
+                target_resolved = target_path.resolve()
+
+                if not str(target_resolved).startswith(str(destination_resolved)):
+                    raise RuntimeError(f"Unsafe ZIP path skipped: {member_name}")
+
+                # Avoid silent overwrites.
+                if target_path.exists():
+                    stem = target_path.stem
+                    suffix = target_path.suffix
+                    target_path = destination / f"{stem}-{int(time.time())}{suffix}"
+
+                with archive.open(member, "r") as source, target_path.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+
+                extracted_files.append(target_path.name)
+
+        return extracted_files
+
+    for file in files:
+        raw_filename = file.filename or ""
+        filename = Path(raw_filename).name
+
+        if not filename:
+            skipped.append("unnamed file")
             continue
 
-        target = target_dir / filename
-
         try:
-            with target.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            uploaded.append(filename)
+            lower_name = filename.lower()
+
+            if lower_name.endswith(".zip"):
+                temp_zip = target_dir / f"upload-{int(time.time())}-{filename}"
+
+                with temp_zip.open("wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+
+                extracted_files = safe_extract_zip(temp_zip, target_dir)
+                temp_zip.unlink(missing_ok=True)
+
+                uploaded.append(filename)
+                extracted.extend(extracted_files)
+
+            elif lower_name.endswith((".html", ".htm")):
+                target = target_dir / filename
+
+                if target.exists():
+                    stem = target.stem
+                    suffix = target.suffix
+                    target = target_dir / f"{stem}-{int(time.time())}{suffix}"
+
+                with target.open("wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+
+                uploaded.append(target.name)
+
+            else:
+                skipped.append(filename)
+
         except Exception as exc:
             failed.append({"file": filename, "error": str(exc)})
 
     return {
         "ok": len(failed) == 0,
-        "message": f"Uploaded {len(uploaded)} HTML draft file(s) to /data/draft_html.",
-        "files": uploaded,
+        "message": (
+            f"Stored {len(uploaded)} uploaded item(s); "
+            f"extracted {len(extracted)} HTML file(s) into /data/draft_html. "
+            "This endpoint does not ingest or rebuild the index."
+        ),
+        "uploaded": uploaded,
+        "extracted_count": len(extracted),
+        "extracted_sample": extracted[:20],
         "skipped": skipped,
         "failed": failed,
     }
