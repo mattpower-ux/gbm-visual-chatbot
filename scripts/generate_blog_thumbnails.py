@@ -163,3 +163,6 @@ def main() -> None:
     print("Skipped existing:", skipped)
     print("No image found:", no_image)
     print("Failed:", failed)
+
+if __name__ == "__main__":
+    main()
