@@ -215,6 +215,31 @@
         .gbm-mag-card { grid-template-columns: 80px 1fr; }
         .gbm-mag-button { grid-column: 1 / -1; }
       }
+      .gbm-thinking {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #ffffff;
+  border: 1px solid #dfe5e8;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.05);
+}
+
+.gbm-thinking-photo {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #e5e7eb;
+  flex: 0 0 auto;
+}
+
+.gbm-thinking-text {
+  font-weight: 800;
+  color: #007565;
+  font-size: 16px;
+}
     </style>
 
     <button class="gbm-launcher">${esc(title)}</button>
