@@ -4,7 +4,11 @@ import os
 import re
 from pathlib import Path
 
-MAGAZINE_DIR = Path(os.getenv("MAGAZINE_DIR", "/data/magazines"))
+PDF_DIRS = [
+    Path("/data/magazines"),
+    Path("/data/magazines_done"),
+    Path("/data/pdf_done"),
+]
 COVERS_DIR = Path(os.getenv("COVERS_DIR", "/data/assets/covers"))
 MAX_WIDTH = int(os.getenv("PDF_COVER_MAX_WIDTH", "420"))
 JPEG_QUALITY = int(os.getenv("PDF_COVER_JPEG_QUALITY", "82"))
@@ -24,8 +28,19 @@ def main() -> None:
         raise SystemExit("Missing dependency. Add pymupdf and pillow to requirements.txt.") from exc
 
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    pdfs = sorted(MAGAZINE_DIR.glob("*.pdf"))
-    print(f"Found {len(pdfs)} PDFs in {MAGAZINE_DIR}")
+
+    pdfs = []
+    seen = set()
+
+    for folder in PDF_DIRS:
+        if not folder.exists():
+            continue
+        for pdf in sorted(folder.glob("*.pdf")):
+            if pdf.name not in seen:
+                pdfs.append(pdf)
+                seen.add(pdf.name)
+
+    print(f"Found {len(pdfs)} PDFs across PDF folders")
 
     created = skipped = failed = 0
 
@@ -38,9 +53,6 @@ def main() -> None:
 
         try:
             doc = fitz.open(pdf_path)
-            if doc.page_count < 1:
-                raise RuntimeError("PDF has no pages.")
-
             page = doc.load_page(0)
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -51,6 +63,7 @@ def main() -> None:
 
             img.save(out_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
             doc.close()
+
             print(f"Created cover: {out_path.name}")
             created += 1
 
@@ -58,12 +71,6 @@ def main() -> None:
             print(f"FAILED {pdf_path.name}: {exc}")
             failed += 1
 
-    print("\n=== PDF COVER GENERATION COMPLETE ===")
     print(f"Created: {created}")
     print(f"Skipped existing: {skipped}")
     print(f"Failed: {failed}")
-    print(f"Output folder: {COVERS_DIR}")
-
-
-if __name__ == "__main__":
-    main()
