@@ -58,13 +58,19 @@ def utc_now() -> datetime:
 def parse_dt(value: str | None) -> Optional[datetime]:
     if not value:
         return None
+
     value = value.strip()
     if not value:
         return None
+
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except Exception:
         pass
+
     try:
         return datetime.strptime(value[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except Exception:
