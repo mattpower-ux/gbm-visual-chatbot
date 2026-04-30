@@ -32,7 +32,6 @@
       font-weight: 700;
       cursor: pointer;
       z-index: 999999;
-      box-shadow: 0 8px 20px rgba(0,0,0,0.2);
     }
 
     .gbm-panel {
@@ -48,7 +47,6 @@
       flex-direction: column;
       overflow: hidden;
       z-index: 999998;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
     }
 
     .gbm-header {
@@ -68,8 +66,8 @@
     .gbm-close {
       font-size: 28px;
       cursor: pointer;
-      background: none;
       border: none;
+      background: none;
       color: white;
     }
 
@@ -207,7 +205,6 @@
       <div class="gbm-toggle">DIVE DEEPER WITH TEXT ONLY</div>
     `;
 
-    // toggle
     messages.querySelector(".gbm-toggle").onclick = () => {
       mode = "text";
       renderText(data);
@@ -229,15 +226,18 @@
       messages.appendChild(insights);
     }
 
-    // cards
+    // blog cards
     if (data.cards) {
       const row = document.createElement("div");
       row.className = "gbm-card-row";
 
       data.cards.forEach(c => {
+        const img = c.image || c.remote_image || "/assets/thumbs/fallback-article.jpg";
+
         row.innerHTML += `
           <div class="gbm-card">
-            <img src="${abs(c.image)}" onerror="this.src='${apiBase}/assets/thumbs/fallback-article.jpg'">
+            <img src="${abs(img)}"
+                 onerror="this.onerror=null;this.src='${abs(c.remote_image || "/assets/thumbs/fallback-article.jpg")}'">
             <div class="gbm-card-body">
               <div class="gbm-card-title">${c.title}</div>
               <a href="${abs(c.url)}" target="_blank">Read →</a>
@@ -248,12 +248,44 @@
 
       messages.appendChild(row);
     }
+
+    // magazine cards
+    if (data.magazines && data.magazines.length) {
+      const title = document.createElement("h3");
+      title.innerText = "From the Magazine";
+      messages.appendChild(title);
+
+      data.magazines.forEach(m => {
+        messages.innerHTML += `
+          <div class="gbm-card">
+            <img src="${abs(m.cover)}"
+                 onerror="this.src='${apiBase}/assets/covers/fallback-magazine.jpg'">
+            <div class="gbm-card-body">
+              <div class="gbm-card-title">${m.title}</div>
+              <a href="${abs(m.url)}" target="_blank">View PDF →</a>
+            </div>
+          </div>
+        `;
+      });
+    }
   }
 
   function renderText(data) {
+    const sources = data.sources || [];
+
     messages.innerHTML = `
       <div class="gbm-answer">${data.text_only_answer || data.answer}</div>
       <div class="gbm-toggle">RETURN TO VISUAL MODE</div>
+      ${sources.length ? `
+        <div>
+          <h3>Sources</h3>
+          <ul>
+            ${sources.map(s => `
+              <li><a href="${abs(s.url)}" target="_blank">${s.title}</a></li>
+            `).join("")}
+          </ul>
+        </div>
+      ` : ""}
     `;
 
     messages.querySelector(".gbm-toggle").onclick = () => {
@@ -281,5 +313,12 @@
   }
 
   send.onclick = ask;
-  input.addEventListener("keydown", e => e.key === "Enter" && ask());
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.keyCode === 13) {
+      e.preventDefault();
+      send.click();
+    }
+  });
+
 })();
