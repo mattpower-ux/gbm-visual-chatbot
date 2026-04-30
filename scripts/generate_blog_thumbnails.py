@@ -63,18 +63,31 @@ def score_image(kind: str, u: str) -> int:
     return score
 
 def find_best_image(url: str) -> str:
-    r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+    try:
+        r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+    except Exception:
+        return ""
 
+    # ✅ Handle dead links cleanly
+    if r.status_code == 404:
+        return ""
+
+    try:
+        r.raise_for_status()
+    except Exception:
+        return ""
+
+    soup = BeautifulSoup(r.text, "html.parser")
     found = []
 
+    # meta tags
     for tag in soup.find_all("meta"):
         k = (tag.get("property") or tag.get("name") or "").lower()
         v = tag.get("content")
         if v and "image" in k:
             found.append(("meta", clean_url(v, url)))
 
+    # img tags
     for img in soup.find_all("img"):
         for attr in ["src", "data-src", "data-lazy-src", "data-original"]:
             if img.get(attr):
@@ -86,6 +99,7 @@ def find_best_image(url: str) -> str:
                 for p in parts:
                     found.append((attr, clean_url(p, url)))
 
+    # raw image scan
     raw = re.findall(
         r'https?://[^"\')\s<>]+?\.(?:webp|jpg|jpeg|png)(?:\?[^"\')\s<>]*)?',
         r.text,
@@ -100,7 +114,6 @@ def find_best_image(url: str) -> str:
     for kind, u in found:
         if not u or u in seen:
             continue
-
         seen.add(u)
 
         if looks_bad(u):
@@ -118,10 +131,17 @@ def find_best_image(url: str) -> str:
     return dedup[0][2]
 
 def save_thumb(image_url: str, dest: Path) -> bool:
-    r = requests.get(image_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
+    try:
+        r = requests.get(image_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+    except Exception:
+        return False
 
-    img = Image.open(BytesIO(r.content)).convert("RGB")
+    try:
+        img = Image.open(BytesIO(r.content)).convert("RGB")
+    except Exception:
+        return False
+
     img.thumbnail((640, 360))
 
     canvas = Image.new("RGB", (640, 360), (240, 240, 240))
@@ -144,9 +164,7 @@ def main():
 
     print(f"Found {len(urls)} blog URLs")
 
-    made = 0
-    skipped = 0
-    failed = 0
+    made = skipped = failed = 0
 
     for i, url in enumerate(urls, start=1):
         filename = slug_from_url(url)
@@ -156,21 +174,21 @@ def main():
             skipped += 1
             continue
 
-        try:
-            image_url = find_best_image(url)
+        image_url = find_best_image(url)
 
-            if not image_url:
-                print(f"[{i}/{len(urls)}] no usable image: {url}")
-                failed += 1
-                continue
-
-            save_thumb(image_url, dest)
-            made += 1
-            print(f"[{i}/{len(urls)}] saved {filename} <- {image_url}")
-
-        except Exception as exc:
+        if not image_url:
+            print(f"[{i}/{len(urls)}] no usable image: {url}")
             failed += 1
-            print(f"[{i}/{len(urls)}] failed {url}: {exc}")
+            continue
+
+        ok = save_thumb(image_url, dest)
+
+        if ok:
+            made += 1
+            print(f"[{i}/{len(urls)}] saved {filename}")
+        else:
+            failed += 1
+            print(f"[{i}/{len(urls)}] failed download: {url}")
 
     print({
         "made": made,
