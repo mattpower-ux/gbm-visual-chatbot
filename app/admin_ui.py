@@ -40,6 +40,24 @@ HTML = r"""
     .disk-line { margin-top: 8px; font-size: 12px; color: #475569; }
     .thumb-preview { margin-top: 10px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 10px; overflow: hidden; background: #f8fafc; display: none; }
     .thumb-preview img { width: 100%; max-height: 180px; object-fit: cover; display: block; }
+
+    /* Keep controls within the first screen: scroll long file lists and answer logs. */
+    .upload-box { max-height: 360px; overflow-y: auto; }
+    .file-col { max-height: 220px; overflow-y: auto; }
+    .logs-card { max-height: 640px; min-height: 520px; display: flex; flex-direction: column; overflow: hidden; }
+    .controls-card { max-height: 640px; min-height: 520px; overflow-y: auto; }
+    #logs { flex: 1; overflow-y: auto; padding-right: 8px; }
+    #logs::-webkit-scrollbar, .controls-card::-webkit-scrollbar, .upload-box::-webkit-scrollbar, .file-col::-webkit-scrollbar { width: 8px; }
+    #logs::-webkit-scrollbar-thumb, .controls-card::-webkit-scrollbar-thumb, .upload-box::-webkit-scrollbar-thumb, .file-col::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
+
+    .source-list { margin-top: 10px; display: grid; gap: 8px; }
+    .source-card { display: grid; grid-template-columns: 72px 1fr; gap: 10px; align-items: center; border: 1px solid #e2e8f0; border-radius: 12px; padding: 8px; background: #f8fafc; }
+    .source-thumb { width: 72px; height: 44px; object-fit: cover; border-radius: 8px; border: 1px solid #cbd5e1; background: #e2e8f0; }
+    .source-title { font-weight: 700; font-size: 13px; line-height: 1.25; color: #0f172a; }
+    .source-url { margin-top: 2px; font-size: 11px; color: #64748b; overflow-wrap: anywhere; }
+    .source-actions { margin-top: 7px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .small-btn { padding: 6px 9px; border-radius: 8px; font-size: 12px; font-weight: 700; }
+    .small-btn.secondary { background: #e2e8f0; color: #0f172a; }
     @media (max-width: 900px) { .file-dashboard { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 560px) { .file-dashboard { grid-template-columns: 1fr; } }
     @media (max-width: 760px) {
@@ -93,11 +111,11 @@ HTML = r"""
   </section>
   <div style="height:18px"></div>
   <div class="grid">
-    <section class="card">
+    <section class="card logs-card">
       <h2>Recent chatbot answers</h2>
       <div id="logs"></div>
     </section>
-    <aside class="card">
+    <aside class="card controls-card">
       <h2>Create or update a correction</h2>
       <div class="muted">Use exact match for one question, contains for a recurring topic, or regex for advanced patterns.</div>
       <div style="height:10px"></div>
@@ -125,10 +143,10 @@ HTML = r"""
       <div id="status" class="muted" style="margin-top:10px"></div>
       <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0" />
       <h3>Override Article Thumbnail</h3>
-      <div class="muted">Paste a public blog URL, upload a replacement image, and it will be resized to 640×360 and saved as an editor override. This does not require rebuilding the index.</div>
+      <div class="muted">Click <strong>Replace thumbnail</strong> next to any source in the recent-answer list, then upload a replacement image. It will be resized to 640×360 and saved as an editor override. This does not require rebuilding the index.</div>
       <div style="height:10px"></div>
       <label>Article URL</label>
-      <input id="thumb_url" placeholder="https://www.greenbuildermedia.com/blog/example-article" />
+      <input id="thumb_url" placeholder="Click Replace thumbnail next to a source, or paste a blog URL" />
       <div style="height:10px"></div>
       <label>Replacement image</label>
       <input type="file" id="thumb_file" accept="image/*" />
@@ -146,6 +164,46 @@ HTML = r"""
 <script>
 function escapeHtml(s) {
   return (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function articleSlugFromUrl(url) {
+  try {
+    const u = new URL(url, window.location.origin);
+    const parts = u.pathname.split('/').filter(Boolean);
+    const raw = parts.length ? parts[parts.length - 1] : 'article';
+    return raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'article';
+  } catch (e) {
+    return 'article';
+  }
+}
+
+function sourceCardHtml(src) {
+  const title = src.title || 'Source';
+  const url = src.url || '';
+  if (!url) {
+    return `<span class="pill">${escapeHtml(title)}</span>`;
+  }
+
+  const slug = articleSlugFromUrl(url);
+  const overrideThumb = `/assets/thumbs/overrides/${slug}.jpg`;
+  const normalThumb = `/assets/thumbs/${slug}.jpg`;
+  const fallbackThumb = `/assets/thumbs/fallback-article.jpg`;
+
+  return `
+    <div class="source-card">
+      <img class="source-thumb" src="${escapeHtml(overrideThumb)}?v=${Date.now()}"
+        onerror="this.onerror=function(){this.onerror=null;this.src='${fallbackThumb}';};this.src='${normalThumb}';"
+        alt="Source thumbnail" />
+      <div>
+        <div class="source-title">${escapeHtml(title)}</div>
+        <div class="source-url">${escapeHtml(url)}</div>
+        <div class="source-actions">
+          <button type="button" class="small-btn replaceThumbBtn" data-thumb-url="${encodeURIComponent(url)}" data-thumb-title="${encodeURIComponent(title)}">Replace thumbnail</button>
+          <a href="${escapeHtml(url)}" target="_blank" rel="noopener"><button type="button" class="small-btn secondary">Open</button></a>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 async function fetchJson(url, options = {}) {
@@ -262,8 +320,8 @@ async function loadLogs() {
       <div><strong>Q:</strong> ${escapeHtml(item.question || '')}</div>
       <div style="margin-top:6px"><strong>A:</strong> ${escapeHtml((item.answer || '').slice(0, 450))}</div>
       <div style="margin-top:8px" class="muted">${escapeHtml(item.created_at || '')}</div>
-      <div style="margin-top:8px">
-        ${(item.public_sources || []).map(src => `<span class="pill">${escapeHtml(src.title || 'Source')}</span>`).join('')}
+      <div class="source-list">
+        ${(item.public_sources || []).map(src => sourceCardHtml(src)).join('')}
         ${item.private_archive_used ? '<span class="pill">private archive used</span>' : ''}
       </div>
       <div style="margin-top:8px"><button data-q="${encodeURIComponent(item.question || '')}" data-a="${encodeURIComponent(item.answer || '')}" class="useBtn">Use as template</button></div>
@@ -275,7 +333,17 @@ async function loadLogs() {
       document.getElementById('question_pattern').value = decodeURIComponent(btn.dataset.q || '');
       document.getElementById('answer_override').value = decodeURIComponent(btn.dataset.a || '');
       document.getElementById('match_type').value = 'exact';
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      document.getElementById('question_pattern').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  });
+
+  document.querySelectorAll('.replaceThumbBtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const url = decodeURIComponent(btn.dataset.thumbUrl || '');
+      const title = decodeURIComponent(btn.dataset.thumbTitle || '');
+      document.getElementById('thumb_url').value = url;
+      document.getElementById('thumbStatus').textContent = `Ready to replace thumbnail for: ${title}`;
+      document.getElementById('thumb_url').scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   });
 }
