@@ -1,174 +1,183 @@
-from __future__ import annotations
-
-import json
-import os
-import re
-from io import BytesIO
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
-
+from urllib.parse import urlparse, urljoin
+import re
+import html
 import requests
+import lancedb
 from bs4 import BeautifulSoup
+from PIL import Image
+from io import BytesIO
 
-DOCUMENTS_FILE = Path("/data/documents.jsonl")
-THUMBS_DIR = Path("/data/assets/thumbs")
-MAX_WIDTH = 640
-MAX_HEIGHT = 360
-JPEG_QUALITY = 80
-TIMEOUT = 20
-LIMIT = int(os.getenv("BLOG_THUMB_LIMIT", "0"))
+THUMB_DIR = Path("/data/assets/thumbs")
+THUMB_DIR.mkdir(parents=True, exist_ok=True)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
-}
+BAD = [
+    "logo", "cta", "icon", "avatar", "headshot", "pixel", "spacer",
+    "team_photos", "author", "profile"
+]
 
-
-def safe_slug_from_url(url: str) -> str:
+def slug_from_url(url: str) -> str:
     path = urlparse(url).path.strip("/")
     slug = Path(path).name or "article"
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-")
-    return slug or "article"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
+    return f"{slug}.jpg"
 
+def clean_url(u: str, base: str) -> str:
+    if not u:
+        return ""
+    u = html.unescape(u).strip()
+    if "," in u and " " in u:
+        u = u.split(",")[0].strip().split(" ")[0]
+    elif " " in u:
+        u = u.split(" ")[0]
+    return urljoin(base, u)
 
-def is_blog(doc: dict) -> bool:
-    url = str(doc.get("url", ""))
-    return (
-        doc.get("visibility", "public") == "public"
-        and url.startswith("http")
-        and "/magazines/" not in url
-        and str(doc.get("source_type", "")).lower() != "pdf"
+def looks_bad(u: str) -> bool:
+    low = u.lower()
+    return any(b in low for b in BAD)
+
+def score_image(kind: str, u: str) -> int:
+    low = u.lower()
+    score = 0
+
+    if kind == "meta":
+        score += 100
+    if "featured" in low:
+        score += 80
+    if "/hubfs/" in low:
+        score += 40
+    if "hs-fs" in low:
+        score += 25
+    if ".jpg" in low or ".jpeg" in low:
+        score += 15
+    if ".webp" in low:
+        score += 10
+    if "width=" in low:
+        score += 5
+
+    if looks_bad(u):
+        score -= 500
+    if re.search(r"/blog/\d+$", low):
+        score -= 500
+
+    return score
+
+def find_best_image(url: str) -> str:
+    r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    found = []
+
+    for tag in soup.find_all("meta"):
+        k = (tag.get("property") or tag.get("name") or "").lower()
+        v = tag.get("content")
+        if v and "image" in k:
+            found.append(("meta", clean_url(v, url)))
+
+    for img in soup.find_all("img"):
+        for attr in ["src", "data-src", "data-lazy-src", "data-original"]:
+            if img.get(attr):
+                found.append((attr, clean_url(img.get(attr), url)))
+
+        for attr in ["srcset", "data-srcset"]:
+            if img.get(attr):
+                parts = [p.strip().split(" ")[0] for p in img.get(attr).split(",")]
+                for p in parts:
+                    found.append((attr, clean_url(p, url)))
+
+    raw = re.findall(
+        r'https?://[^"\')\s<>]+?\.(?:webp|jpg|jpeg|png)(?:\?[^"\')\s<>]*)?',
+        r.text,
+        re.I,
     )
+    for u in raw:
+        found.append(("raw", clean_url(u, url)))
 
-
-def stored_image(doc: dict) -> str:
-    for key in ["image", "og_image", "featured_image", "thumbnail", "featuredImage"]:
-        val = doc.get(key)
-        if isinstance(val, str) and val.strip():
-            url = val.strip()
-
-            # FIX: convert relative → absolute
-            if url.startswith("/"):
-                return "https://www.greenbuildermedia.com" + url
-
-            return url
-    return ""
-
-
-def discover_image_url(article_url: str) -> str:
-    try:
-        res = requests.get(article_url, headers=HEADERS, timeout=TIMEOUT)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        for attr, value in [
-            ("property", "og:image"),
-            ("name", "twitter:image"),
-            ("property", "twitter:image"),
-        ]:
-            tag = soup.find("meta", attrs={attr: value})
-            if tag and tag.get("content"):
-                return urljoin(article_url, tag["content"].strip())
-
-        img = soup.find("img")
-        if img and img.get("src"):
-            return urljoin(article_url, img["src"].strip())
-
-    except Exception as exc:
-        print(f"Live page image discovery failed for {article_url}: {exc}")
-
-    return ""
-
-
-def save_image(image_url: str, out_path: Path) -> bool:
-    try:
-        from PIL import Image
-
-        res = requests.get(image_url, headers=HEADERS, timeout=TIMEOUT)
-        res.raise_for_status()
-
-        img = Image.open(BytesIO(res.content)).convert("RGB")
-        img.thumbnail((MAX_WIDTH, MAX_HEIGHT), Image.LANCZOS)
-
-        canvas = Image.new("RGB", (MAX_WIDTH, MAX_HEIGHT), (238, 242, 247))
-        x = (MAX_WIDTH - img.width) // 2
-        y = (MAX_HEIGHT - img.height) // 2
-        canvas.paste(img, (x, y))
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        canvas.save(out_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
-        return True
-
-    except Exception as exc:
-        print(f"Image save failed for {image_url}: {exc}")
-        return False
-
-
-def load_records() -> list[dict]:
-    records = []
+    dedup = []
     seen = set()
 
-    with DOCUMENTS_FILE.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                doc = json.loads(line)
-            except Exception:
-                continue
+    for kind, u in found:
+        if not u or u in seen:
+            continue
 
-            if not is_blog(doc):
-                continue
+        seen.add(u)
 
-            url = str(doc.get("url", "")).strip()
-            if not url or url in seen:
-                continue
+        if looks_bad(u):
+            continue
 
-            seen.add(url)
-            records.append(doc)
+        if not re.search(r"\.(webp|jpg|jpeg|png)(\?|$)", u, re.I):
+            continue
 
-            if LIMIT > 0 and len(records) >= LIMIT:
-                break
+        dedup.append((score_image(kind, u), kind, u))
 
-    return records
+    if not dedup:
+        return ""
 
+    dedup.sort(reverse=True)
+    return dedup[0][2]
 
-def main() -> None:
-    THUMBS_DIR.mkdir(parents=True, exist_ok=True)
+def save_thumb(image_url: str, dest: Path) -> bool:
+    r = requests.get(image_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
 
-    records = load_records()
-    print(f"Found {len(records)} public blog/article records")
+    img = Image.open(BytesIO(r.content)).convert("RGB")
+    img.thumbnail((640, 360))
 
-    created = skipped = failed = no_image = 0
+    canvas = Image.new("RGB", (640, 360), (240, 240, 240))
+    x = (640 - img.width) // 2
+    y = (360 - img.height) // 2
+    canvas.paste(img, (x, y))
+    canvas.save(dest, "JPEG", quality=82, optimize=True)
 
-    for idx, doc in enumerate(records, start=1):
-        url = str(doc.get("url", ""))
-        slug = safe_slug_from_url(url)
-        out_path = THUMBS_DIR / f"{slug}.jpg"
+    return True
 
-        if out_path.exists() and out_path.stat().st_size > 0:
+def main():
+    db = lancedb.connect("/data/lancedb")
+    table = db.open_table("greenbuilder_chunks")
+    df = table.to_pandas()
+
+    urls = sorted(set(
+        str(u) for u in df["url"].dropna()
+        if str(u).startswith("https://www.greenbuildermedia.com/blog/")
+    ))
+
+    print(f"Found {len(urls)} blog URLs")
+
+    made = 0
+    skipped = 0
+    failed = 0
+
+    for i, url in enumerate(urls, start=1):
+        filename = slug_from_url(url)
+        dest = THUMB_DIR / filename
+
+        if dest.exists() and dest.stat().st_size > 1000:
             skipped += 1
             continue
 
-        print(f"[{idx}/{len(records)}] {url}")
+        try:
+            image_url = find_best_image(url)
 
-        image_url = stored_image(doc)
+            if not image_url:
+                print(f"[{i}/{len(urls)}] no usable image: {url}")
+                failed += 1
+                continue
 
-        if not image_url:
-            image_url = discover_image_url(url)
+            save_thumb(image_url, dest)
+            made += 1
+            print(f"[{i}/{len(urls)}] saved {filename} <- {image_url}")
 
-        if not image_url:
-            no_image += 1
-            print("  No image found.")
-            continue
-
-        if save_image(image_url, out_path):
-            created += 1
-            print(f"  Created thumbnail: {out_path.name}")
-        else:
+        except Exception as exc:
             failed += 1
+            print(f"[{i}/{len(urls)}] failed {url}: {exc}")
 
-    print("Created:", created)
-    print("Skipped existing:", skipped)
-    print("No image found:", no_image)
-    print("Failed:", failed)
+    print({
+        "made": made,
+        "skipped": skipped,
+        "failed": failed,
+        "thumb_dir": str(THUMB_DIR),
+    })
 
 if __name__ == "__main__":
     main()
