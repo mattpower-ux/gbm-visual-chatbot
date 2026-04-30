@@ -9,12 +9,14 @@ import subprocess
 import time
 import zipfile
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import urlparse
 
 import gspread
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
+from PIL import Image
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -895,6 +897,81 @@ def admin_create_correction(
         {**payload.model_dump(), "editor_name": payload.editor_name or username}
     )
     return {"ok": True, "message": "Correction saved", "correction": saved}
+
+
+THUMB_OVERRIDE_DIR = Path("/data/assets/thumbs/overrides")
+THUMB_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _slug_for_article_url(url: str) -> str:
+    path = urlparse(str(url or "")).path.strip("/")
+    slug = Path(path).name or "article"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
+    return slug
+
+
+@app.post("/api/admin/upload-thumbnail")
+async def upload_thumbnail_override(
+    url: str,
+    file: UploadFile = File(...),
+    _: str = Depends(admin_auth),
+) -> dict:
+    """Upload an editor-approved article thumbnail override.
+
+    The uploaded image is center-cropped to 640x360 and saved to:
+    /data/assets/thumbs/overrides/<article-slug>.jpg
+
+    Existing chat cards automatically prefer this override over scraped,
+    generated, or fallback thumbnails.
+    """
+    try:
+        clean_url = str(url or "").strip()
+        if not (
+            clean_url.startswith("https://www.greenbuildermedia.com/blog/")
+            or clean_url.startswith("https://greenbuildermedia.com/blog/")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Use a public Green Builder blog URL.",
+            )
+
+        if not (file.content_type or "").startswith("image/"):
+            raise HTTPException(status_code=400, detail="Upload must be an image file.")
+
+        slug = _slug_for_article_url(clean_url)
+        dest = THUMB_OVERRIDE_DIR / f"{slug}.jpg"
+
+        contents = await file.read()
+        img = Image.open(BytesIO(contents)).convert("RGB")
+
+        target_w, target_h = 640, 360
+        img_ratio = img.width / img.height
+        target_ratio = target_w / target_h
+
+        if img_ratio > target_ratio:
+            new_h = target_h
+            new_w = int(new_h * img_ratio)
+        else:
+            new_w = target_w
+            new_h = int(new_w / img_ratio)
+
+        img = img.resize((new_w, new_h))
+        left = max(0, (new_w - target_w) // 2)
+        top = max(0, (new_h - target_h) // 2)
+        img = img.crop((left, top, left + target_w, top + target_h))
+
+        img.save(dest, "JPEG", quality=88, optimize=True)
+
+        return {
+            "ok": True,
+            "message": "Thumbnail override uploaded.",
+            "path": f"/assets/thumbs/overrides/{slug}.jpg",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/admin/rebuild-index")
