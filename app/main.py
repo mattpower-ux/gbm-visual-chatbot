@@ -392,6 +392,20 @@ def _thumb_for_url(url: str) -> str:
     return f"/assets/thumbs/{slug}.jpg"
 
 
+def _override_thumb_for_url(url: str) -> str:
+    """Return the editor override thumbnail path for a public blog/article URL.
+
+    Editor-uploaded thumbnails are stored on the Render disk at:
+    /data/assets/thumbs/overrides/<article-slug>.jpg
+
+    The public URL returned here is served by the existing /assets mount.
+    """
+    path = urlparse(str(url or "")).path.strip("/")
+    slug = Path(path).name or "article"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
+    return f"/assets/thumbs/overrides/{slug}.jpg"
+
+
 def _generated_thumb_for_url(url: str) -> str:
     """Return the local generated-thumbnail path for a public blog/article URL.
 
@@ -566,8 +580,11 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
         else:
             local_thumb = _thumb_for_url(url)
             generated_thumb = _generated_thumb_for_url(url)
+            override_thumb = _override_thumb_for_url(url)
 
-            if _asset_exists(local_thumb):
+            if _asset_exists(override_thumb):
+                card_image = override_thumb
+            elif _asset_exists(local_thumb):
                 card_image = local_thumb
             elif _asset_exists(generated_thumb):
                 card_image = generated_thumb
@@ -581,6 +598,7 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
                     "source": source.get("attribution_label") or "Green Builder",
                     "category": chunk.get("category") or source.get("attribution_label") or "Article",
                     "image": card_image,
+                    "override_image": override_thumb,
                     "generated_image": generated_thumb,
                     "remote_image": remote_image,
                     "type": "blog",
@@ -1440,5 +1458,6 @@ ASSETS_DIR = Path("/data/assets")
 (ASSETS_DIR / "thumbs").mkdir(parents=True, exist_ok=True)
 (ASSETS_DIR / "covers").mkdir(parents=True, exist_ok=True)
 (ASSETS_DIR / "thumbs" / "generated").mkdir(parents=True, exist_ok=True)
+(ASSETS_DIR / "thumbs" / "overrides").mkdir(parents=True, exist_ok=True)
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
