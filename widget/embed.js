@@ -9,7 +9,6 @@
   }
 
   const root = document.createElement('div');
-  root.id = 'gbm-chat-root';
   document.body.appendChild(root);
 
   let mode = 'visual';
@@ -18,126 +17,128 @@
   function abs(url) {
     if (!url) return '';
     if (url.startsWith('http')) return url;
-    if (url.startsWith('/')) return apiBase + url;
-    return url;
-  }
-
-  function esc(t) {
-    return String(t || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+    return apiBase + url;
   }
 
   root.innerHTML = `
-    <style>
-      #gbm-chat-root * { box-sizing: border-box; font-family: Arial, sans-serif; }
+  <style>
+    .gbm-launcher {
+      position:fixed !important;
+      bottom:20px;
+      right:20px;
+      z-index:999999;
+      background:#006f63;
+      color:#fff;
+      padding:14px 18px;
+      border-radius:999px;
+      font-weight:bold;
+      cursor:pointer;
+    }
 
-      .gbm-launcher {
-        display:block !important;
-        position:fixed !important;
-        bottom:20px !important;
-        right:20px !important;
-        z-index:2147483647 !important;
-        background:#006f63;
-        color:#fff;
-        padding:14px 20px;
-        border-radius:999px;
-        border:none;
-        font-weight:bold;
-        cursor:pointer;
-      }
+    .gbm-panel {
+      position:fixed;
+      bottom:80px;
+      right:20px;
+      width:720px;
+      max-width:95vw;
+      height:720px;
+      max-height:90vh;
+      background:#fff;
+      border-radius:18px;
+      display:none;
+      flex-direction:column;
+      overflow:hidden;
+      z-index:999998;
+      box-shadow:0 20px 60px rgba(0,0,0,.25);
+    }
 
-      .gbm-panel {
-        position:fixed;
-        bottom:80px;
-        right:20px;
-        width:420px;
-        height:600px;
-        background:#fff;
-        border-radius:12px;
-        display:none;
-        flex-direction:column;
-        overflow:hidden;
-        z-index:2147483646;
-        box-shadow:0 10px 30px rgba(0,0,0,.25);
-      }
+    .gbm-header {
+      background:linear-gradient(135deg,#007565,#005447);
+      color:#fff;
+      padding:18px;
+      display:flex;
+      justify-content:space-between;
+      font-size:22px;
+      font-weight:900;
+    }
 
-      .gbm-header {
-        background:#006f63;
-        color:#fff;
-        padding:12px;
-        display:flex;
-        justify-content:space-between;
-      }
+    .gbm-messages {
+      flex:1;
+      overflow:auto;
+      padding:20px;
+      background:#f8fafc;
+    }
 
-      .gbm-messages {
-        flex:1;
-        overflow:auto;
-        padding:10px;
-        background:#f1f5f9;
-      }
+    .gbm-input-row {
+      display:flex;
+      padding:14px;
+      gap:10px;
+      border-top:1px solid #ddd;
+    }
 
-      .gbm-input-row {
-        display:flex;
-        gap:6px;
-        padding:10px;
-      }
+    .gbm-input {
+      flex:1;
+      border-radius:999px;
+      padding:12px;
+      border:1px solid #ccc;
+    }
 
-      .gbm-input {
-        flex:1;
-        padding:8px;
-      }
+    .gbm-send {
+      background:#007565;
+      color:#fff;
+      border:none;
+      border-radius:50%;
+      width:48px;
+      height:48px;
+      cursor:pointer;
+    }
 
-      .gbm-send {
-        background:#006f63;
-        color:#fff;
-        border:none;
-        padding:8px 12px;
-        cursor:pointer;
-      }
+    .gbm-card {
+      border:1px solid #ddd;
+      border-radius:12px;
+      overflow:hidden;
+      margin-top:14px;
+      background:#fff;
+    }
 
-      .gbm-card {
-        border:1px solid #ddd;
-        margin-top:10px;
-        border-radius:10px;
-        overflow:hidden;
-      }
+    .gbm-card img {
+      width:100%;
+      height:120px;
+      object-fit:cover;
+    }
 
-      .gbm-card img {
-        width:100%;
-        height:120px;
-        object-fit:cover;
-      }
+    .gbm-card-body {
+      padding:10px;
+    }
 
-      .gbm-card-body {
-        padding:8px;
-      }
+    .gbm-toggle {
+      margin:10px 0;
+      font-weight:bold;
+      color:#007565;
+      cursor:pointer;
+    }
 
-      .gbm-toggle {
-        font-size:12px;
-        color:#006f63;
-        cursor:pointer;
-        margin:8px 0;
-        font-weight:bold;
-      }
-    </style>
+    .gbm-thinking {
+      font-weight:bold;
+      color:#007565;
+    }
+  </style>
 
-    <button class="gbm-launcher">${esc(title)}</button>
+  <button class="gbm-launcher">${title}</button>
 
-    <div class="gbm-panel">
-      <div class="gbm-header">
-        <div>${esc(title)}</div>
-        <div class="gbm-close" style="cursor:pointer;">✕</div>
-      </div>
-
-      <div class="gbm-messages"></div>
-
-      <div class="gbm-input-row">
-        <input class="gbm-input" placeholder="Ask something..." />
-        <button class="gbm-send">Send</button>
-      </div>
+  <div class="gbm-panel">
+    <div class="gbm-header">
+      ${title}
+      <span class="gbm-close" style="cursor:pointer;">✕</span>
     </div>
+
+    <div class="gbm-messages"></div>
+
+    <div class="gbm-input-row">
+      <input class="gbm-input" placeholder="Ask something..." />
+      <button class="gbm-send">➤</button>
+    </div>
+  </div>
   `;
 
   const launcher = root.querySelector('.gbm-launcher');
@@ -150,7 +151,6 @@
   launcher.onclick = () => {
     panel.style.display = 'flex';
     launcher.style.display = 'none';
-    input.focus();
   };
 
   closeBtn.onclick = () => {
@@ -164,7 +164,7 @@
     const wrap = document.createElement('div');
 
     wrap.innerHTML = `
-      <div>${esc(data.visual_summary || data.answer)}</div>
+      <div>${data.visual_summary || data.answer}</div>
       <div class="gbm-toggle">DIVE DEEPER WITH TEXT ONLY</div>
     `;
 
@@ -174,28 +174,30 @@
       renderText(data);
     };
 
+    // BLOG CARDS
     (data.cards || []).forEach(c => {
       const el = document.createElement('div');
       el.className = 'gbm-card';
       el.innerHTML = `
         <img src="${abs(c.image || '/assets/thumbs/fallback-article.jpg')}">
         <div class="gbm-card-body">
-          <a href="${abs(c.url)}" target="_blank">${esc(c.title)}</a>
+          <a href="${abs(c.url)}" target="_blank">${c.title}</a>
         </div>
       `;
-      messages.appendChild(el);
+      wrap.appendChild(el);
     });
 
+    // MAGAZINE CARDS
     (data.magazines || []).forEach(m => {
       const el = document.createElement('div');
       el.className = 'gbm-card';
       el.innerHTML = `
         <img src="${abs(m.cover || '/assets/covers/fallback-magazine.jpg')}">
         <div class="gbm-card-body">
-          <a href="${abs(m.url)}" target="_blank">${esc(m.title)}</a>
+          <a href="${abs(m.url)}" target="_blank">${m.title}</a>
         </div>
       `;
-      messages.appendChild(el);
+      wrap.appendChild(el);
     });
 
     messages.appendChild(wrap);
@@ -205,7 +207,7 @@
     const wrap = document.createElement('div');
 
     wrap.innerHTML = `
-      <div>${esc(data.text_only_answer)}</div>
+      <div>${data.text_only_answer}</div>
       <div class="gbm-toggle">RETURN TO VISUAL MODE</div>
     `;
 
@@ -222,7 +224,7 @@
     const q = input.value.trim();
     if (!q) return;
 
-    messages.innerHTML = `<div>Thinking...</div>`;
+    messages.innerHTML = `<div class="gbm-thinking">Thinking...</div>`;
 
     const res = await fetch(apiBase + '/chat', {
       method: 'POST',
@@ -240,7 +242,7 @@
   send.onclick = ask;
 
   input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter') {
       e.preventDefault();
       ask();
     }
