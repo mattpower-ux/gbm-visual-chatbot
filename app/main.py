@@ -392,6 +392,20 @@ def _thumb_for_url(url: str) -> str:
     return f"/assets/thumbs/{slug}.jpg"
 
 
+def _generated_thumb_for_url(url: str) -> str:
+    """Return the local generated-thumbnail path for a public blog/article URL.
+
+    Generated thumbnails should be stored on the Render disk at:
+    /data/assets/thumbs/generated/<article-slug>.jpg
+
+    The public URL returned here is served by the existing /assets mount.
+    """
+    path = urlparse(str(url or "")).path.strip("/")
+    slug = Path(path).name or "article"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
+    return f"/assets/thumbs/generated/{slug}.jpg"
+
+
 def _asset_exists(asset_path: str) -> bool:
     """Return True when an /assets/... file exists on the Render persistent disk."""
     if not asset_path.startswith("/assets/"):
@@ -551,8 +565,14 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
             )
         else:
             local_thumb = _thumb_for_url(url)
-            if not _asset_exists(local_thumb):
-                local_thumb = _topic_fallback_for_chunk(chunk)
+            generated_thumb = _generated_thumb_for_url(url)
+
+            if _asset_exists(local_thumb):
+                card_image = local_thumb
+            elif _asset_exists(generated_thumb):
+                card_image = generated_thumb
+            else:
+                card_image = _topic_fallback_for_chunk(chunk)
 
             cards.append(
                 {
@@ -560,7 +580,8 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
                     "url": url,
                     "source": source.get("attribution_label") or "Green Builder",
                     "category": chunk.get("category") or source.get("attribution_label") or "Article",
-                    "image": local_thumb,
+                    "image": card_image,
+                    "generated_image": generated_thumb,
                     "remote_image": remote_image,
                     "type": "blog",
                     "excerpt": excerpt,
@@ -1418,5 +1439,6 @@ async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depend
 ASSETS_DIR = Path("/data/assets")
 (ASSETS_DIR / "thumbs").mkdir(parents=True, exist_ok=True)
 (ASSETS_DIR / "covers").mkdir(parents=True, exist_ok=True)
+(ASSETS_DIR / "thumbs" / "generated").mkdir(parents=True, exist_ok=True)
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
