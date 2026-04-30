@@ -1,12 +1,6 @@
-(async function () {
+(function () {
 
   const API = "https://gbm-visual-chatbot.onrender.com";
-
-  function el(tag, cls) {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    return e;
-  }
 
   function abs(u) {
     if (!u) return "";
@@ -14,6 +8,15 @@
     return API + u;
   }
 
+  function el(tag, cls) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  // -------------------------
+  // CARDS (UNCHANGED)
+  // -------------------------
   function renderCards(cards) {
     if (!cards || !cards.length) return "";
 
@@ -21,11 +24,11 @@
       <div class="gbm-cards">
         ${cards.map(c => `
           <div class="gbm-card">
-            <img src="${abs(c.image)}" class="gbm-card-img"
-              onerror="this.src='${API}/assets/thumbs/fallback-article.jpg'">
+            <img src="${abs(c.image)}"
+                 onerror="this.src='${API}/assets/thumbs/fallback-article.jpg'">
             <div class="gbm-card-body">
               <div class="gbm-card-title">${c.title}</div>
-              <a href="${c.url}" target="_blank" class="gbm-read">Read →</a>
+              <a href="${c.url}" target="_blank">Read →</a>
             </div>
           </div>
         `).join("")}
@@ -33,6 +36,9 @@
     `;
   }
 
+  // -------------------------
+  // ✅ FIXED MAGAZINE BLOCK
+  // -------------------------
   function renderMagazines(mags) {
     if (!mags || !mags.length) return "";
 
@@ -49,37 +55,23 @@
 
           <div class="gbm-mag-body">
             <div class="gbm-mag-title">${m.title}</div>
-            <div class="gbm-mag-meta">${m.source || "Green Builder Magazine"} ${m.issue ? "• " + m.issue : ""}</div>
-            <a href="${m.url}" target="_blank" class="gbm-mag-btn">View Magazine PDF →</a>
+            <div class="gbm-mag-meta">
+              ${m.source || "Green Builder Magazine"}
+              ${m.issue ? " • " + m.issue : ""}
+            </div>
+
+            <a href="${m.url}" target="_blank" class="gbm-mag-btn">
+              View Magazine PDF →
+            </a>
           </div>
         </div>
       </div>
     `;
   }
 
-  function renderTextLinks(cards, mags) {
-    let links = [];
-
-    if (cards) {
-      links.push(...cards.map(c =>
-        `<a href="${c.url}" target="_blank">${c.title}</a>`
-      ));
-    }
-
-    if (mags) {
-      links.push(...mags.map(m =>
-        `<a href="${m.url}" target="_blank">${m.title}</a>`
-      ));
-    }
-
-    return `
-      <div class="gbm-text-links">
-        <strong>Sources:</strong><br/>
-        ${links.join("<br/>")}
-      </div>
-    `;
-  }
-
+  // -------------------------
+  // CHAT
+  // -------------------------
   async function send(q) {
     const res = await fetch(`${API}/chat`, {
       method: "POST",
@@ -89,10 +81,14 @@
     return res.json();
   }
 
+  // -------------------------
+  // UI
+  // -------------------------
   function buildUI() {
 
     const wrap = el("div", "gbm-wrap");
     const log = el("div", "gbm-log");
+
     const input = el("input", "gbm-input");
     const btn = el("button", "gbm-send");
 
@@ -134,64 +130,57 @@
     document.body.appendChild(wrap);
   }
 
-  // TEXT ONLY MODE
-  window.GBM_render_text_only = function (data, container) {
-    container.innerHTML = `
-      <div class="gbm-text-only">
-        <div>${data.answer}</div>
-        ${renderTextLinks(data.cards, data.magazines)}
-      </div>
-    `;
-  };
-
-  // CSS FIXES (PDF + layout)
+  // -------------------------
+  // ✅ CSS FIX ONLY
+  // -------------------------
   const style = document.createElement("style");
   style.innerHTML = `
-
+  
   .gbm-mag-card {
-    display:flex;
-    align-items:center;
-    gap:16px;
-    border:1px solid #d8dddd;
-    border-radius:14px;
-    padding:12px;
-    background:#fff;
-    margin-top:10px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border: 1px solid #d7dede;
+    border-radius: 16px;
+    background: #fff;
+    padding: 14px;
+    margin-top: 12px;
   }
 
   .gbm-mag-cover {
-    width:92px !important;
-    height:122px !important;
-    min-width:92px;
-    object-fit:cover;
-    border-radius:6px;
-    background:#eef2f2;
+    width: 92px !important;
+    height: 122px !important;
+    min-width: 92px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #eef2f2;
+    flex: 0 0 auto;
   }
 
   .gbm-mag-body {
-    flex:1;
+    flex: 1;
   }
 
   .gbm-mag-title {
-    font-weight:800;
-    font-size:16px;
-    margin-bottom:4px;
+    font-weight: 800;
+    font-size: 16px;
+    margin-bottom: 4px;
   }
 
   .gbm-mag-meta {
-    font-size:13px;
-    color:#007565;
-    font-weight:700;
-    margin-bottom:6px;
+    font-size: 13px;
+    color: #007565;
+    font-weight: 700;
+    margin-bottom: 6px;
   }
 
   .gbm-mag-btn {
-    border:1px solid #007565;
-    padding:8px 12px;
-    border-radius:8px;
-    text-decoration:none;
-    color:#007565;
-    font-weight:700;
+    border: 1px solid #007565;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: #007565;
+    font-weight: 700;
   }
 
   `;
