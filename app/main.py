@@ -547,6 +547,38 @@ def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
     )
 
 
+
+
+def _find_relevant_magazine_sources(question: str, seen_urls: set[str], limit: int = 1) -> list[SourceItem]:
+    """Fallback: if normal retrieval found no PDF, run one magazine-focused search.
+
+    This keeps visual mode from dropping the magazine strip when the first
+    retrieval pass finds only blog/article chunks.
+    """
+    try:
+        magazine_chunks = search(f"{question} Green Builder Magazine PDF archive")
+    except Exception as exc:
+        print(f"Magazine fallback search failed: {exc}")
+        return []
+
+    found: list[SourceItem] = []
+
+    for chunk in magazine_chunks:
+        pdf_source = _magazine_source_from_chunk(chunk)
+        if not pdf_source:
+            continue
+        if pdf_source.url in seen_urls:
+            continue
+
+        found.append(pdf_source)
+        seen_urls.add(pdf_source.url)
+
+        if len(found) >= limit:
+            break
+
+    return found
+
+
 def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build visual article cards and magazine cards from public sources.
 
@@ -835,6 +867,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     if not pdf_sources:
         seen_pdf_urls = {s.url for s in pdf_sources}
+
         for chunk in chunks:
             pdf_source = _magazine_source_from_chunk(chunk)
             if pdf_source and pdf_source.url not in seen_pdf_urls:
@@ -842,6 +875,11 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                 seen_pdf_urls.add(pdf_source.url)
             if len(pdf_sources) >= 3:
                 break
+
+        if not pdf_sources:
+            pdf_sources.extend(
+                _find_relevant_magazine_sources(req.question, seen_pdf_urls, limit=1)
+            )
 
     final_sources: list[SourceItem] = []
     final_sources.extend(blog_sources[:5])
