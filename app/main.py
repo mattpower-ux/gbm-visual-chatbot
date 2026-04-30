@@ -392,6 +392,40 @@ def _thumb_for_url(url: str) -> str:
     return f"/assets/thumbs/{slug}.jpg"
 
 
+def _asset_exists(asset_path: str) -> bool:
+    """Return True when an /assets/... file exists on the Render persistent disk."""
+    if not asset_path.startswith("/assets/"):
+        return False
+    disk_path = Path("/data") / asset_path.lstrip("/")
+    try:
+        return disk_path.exists() and disk_path.stat().st_size > 1000
+    except Exception:
+        return False
+
+
+def _topic_fallback_for_chunk(chunk: dict[str, Any]) -> str:
+    """Choose a better topic fallback image when a real article thumbnail is unavailable."""
+    haystack = " ".join([
+        str(chunk.get("title", "")),
+        str(chunk.get("text", "")),
+        str(chunk.get("category", "")),
+        str(chunk.get("url", "")),
+    ]).lower()
+
+    if any(w in haystack for w in ["insulation", "foam", "r-value", "r value", "thermal", "air seal"]):
+        return "/assets/thumbs/fallback-insulation.jpg"
+    if any(w in haystack for w in ["solar", "battery", "storage", "photovoltaic", "pv", "inverter"]):
+        return "/assets/thumbs/fallback-solar.jpg"
+    if any(w in haystack for w in ["hurricane", "resilience", "resilient", "flood", "storm", "wildfire", "disaster"]):
+        return "/assets/thumbs/fallback-resilience.jpg"
+    if any(w in haystack for w in ["water", "drought", "plumbing", "irrigation", "rainwater", "greywater"]):
+        return "/assets/thumbs/fallback-water.jpg"
+    if any(w in haystack for w in ["hvac", "heat pump", "cooling", "heating", "thermostat", "air conditioner"]):
+        return "/assets/thumbs/fallback-hvac.jpg"
+
+    return "/assets/thumbs/fallback-article.jpg"
+
+
 def _remote_image_from_chunk(chunk: dict[str, Any]) -> str:
     """Return the best original image URL captured at crawl time."""
     return (
@@ -517,6 +551,9 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
             )
         else:
             local_thumb = _thumb_for_url(url)
+            if not _asset_exists(local_thumb):
+                local_thumb = _topic_fallback_for_chunk(chunk)
+
             cards.append(
                 {
                     "title": title,
