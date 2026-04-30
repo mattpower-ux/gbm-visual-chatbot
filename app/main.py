@@ -11,6 +11,7 @@ import zipfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, List
+from urllib.parse import urlparse
 
 import gspread
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
@@ -55,7 +56,7 @@ app.add_middleware(
 TODAY = date.today()
 DAILY_CRAWL_INTERVAL_SECONDS = 60 * 60 * 24
 STARTUP_CRAWL_DELAY_SECONDS = 30
-ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "true").strip().lower() in {
+ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
 
@@ -362,14 +363,43 @@ def _asset_safe_name(value: str) -> str:
     return value or "source"
 
 
+def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
+    """Surface public GBM URLs and magazine PDFs; keep true private drafts hidden.
+
+    Some public Green Builder blog records were indexed with visibility='private'.
+    This function treats Green Builder public URLs and magazine archive URLs as
+    public source material while keeping internal/private draft paths hidden.
+    """
+    url = str(chunk.get("url", "") or "").strip()
+
+    if (
+        url.startswith("https://www.greenbuildermedia.com/")
+        or url.startswith("https://greenbuildermedia.com/")
+        or url.startswith("/magazines/")
+        or "/magazines/" in url
+    ):
+        return True
+
+    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
+    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
+
+
 def _thumb_for_url(url: str) -> str:
     """Return the local generated thumbnail path for a public blog/article URL."""
-    from urllib.parse import urlparse
-
     path = urlparse(str(url or "")).path.strip("/")
     slug = Path(path).name or "article"
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
     return f"/assets/thumbs/{slug}.jpg"
+
+
+def _remote_image_from_chunk(chunk: dict[str, Any]) -> str:
+    """Return the best original image URL captured at crawl time."""
+    return (
+        str(chunk.get("image") or "").strip()
+        or str(chunk.get("og_image") or "").strip()
+        or str(chunk.get("featured_image") or "").strip()
+        or str(chunk.get("thumbnail") or "").strip()
+    )
 
 
 def _find_chunk_for_source(source: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -401,22 +431,6 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
         or source_type == "pdf"
         or pdf_filename.lower().endswith(".pdf")
     )
-
-
-def _is_public_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface public GBM URLs and magazine PDFs; keep true private drafts hidden."""
-    url = str(chunk.get("url", "") or "").strip()
-
-    if (
-        url.startswith("https://www.greenbuildermedia.com/")
-        or url.startswith("https://greenbuildermedia.com/")
-        or url.startswith("/magazines/")
-        or "/magazines/" in url
-    ):
-        return True
-
-    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
-    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
 
 
 def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
@@ -470,23 +484,21 @@ def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
 
 
 def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build visual article cards and magazine cards from public sources."""
+    """Build visual article cards and magazine cards from public sources.
+
+    Article cards use local generated thumbnails first and also include the
+    original crawled image as remote_image. The widget tries local -> remote -> fallback.
+    """
     cards: list[dict[str, Any]] = []
     magazines: list[dict[str, Any]] = []
 
     for raw_source in sources:
         source = _source_to_dict(raw_source)
-        url = str(source.get("url", ""))
+        url = str(source.get("url", "") or "")
         title = source.get("title") or "Green Builder Media source"
         excerpt = source.get("excerpt") or ""
         chunk = _find_chunk_for_source(source, chunks)
-        image = (
-            chunk.get("image")
-            or chunk.get("featured_image")
-            or chunk.get("og_image")
-            or chunk.get("thumbnail")
-            or ""
-        )
+        remote_image = _remote_image_from_chunk(chunk)
 
         if url.startswith("/magazines/") or "/magazines/" in url or str(source.get("source_type", "")) == "pdf":
             filename = _asset_safe_name(url)
@@ -511,7 +523,8 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
                     "url": url,
                     "source": source.get("attribution_label") or "Green Builder",
                     "category": chunk.get("category") or source.get("attribution_label") or "Article",
-                    "image": local_thumb or image or "/assets/thumbs/fallback-article.jpg",
+                    "image": local_thumb,
+                    "remote_image": remote_image,
                     "type": "blog",
                     "excerpt": excerpt,
                 }
@@ -672,17 +685,22 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     private_used, attribution_note = summarize_private_usage(chunks)
 
-    # Build clean, deduplicated public source list.
-    # Blogs are deduplicated by URL.
-    # Magazine PDFs are deduplicated by PDF URL so each issue appears only once.
+    # Build clean, deduplicated public source list from the same chunks that
+    # generated the answer. Public GBM URLs are allowed even if older index rows
+    # accidentally mark them visibility='private'. True private/internal drafts
+    # remain hidden.
     seen = set()
-    sources = []
-    for chunk in chunks:
-        if not _is_public_chunk(chunk):
-            continue
-        visibility = "public"
+    sources: list[SourceItem] = []
 
-        url = chunk.get("url")
+    for chunk in chunks:
+        if not _is_public_source_chunk(chunk):
+            continue
+
+        url = str(chunk.get("url", "") or "").strip()
+        if not url:
+            pdf_filename = str(chunk.get("pdf_filename", "") or "").strip()
+            if pdf_filename.lower().endswith(".pdf"):
+                url = f"/magazines/{pdf_filename}"
         if not url:
             continue
 
@@ -706,33 +724,36 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                     clean_title = f"{clean_title} (PDF, p. {int(page)})"
                 except Exception:
                     clean_title = f"{clean_title} (PDF)"
-            elif not clean_title.lower().endswith("(pdf)"):
+            elif not str(clean_title).lower().endswith("(pdf)"):
                 clean_title = f"{clean_title} (PDF)"
 
             attribution_label = "Magazine archive"
+            surface_policy = "show_source"
         else:
             clean_title = chunk.get("title", "Untitled")
-            attribution_label = chunk.get("attribution_label")
+            attribution_label = chunk.get("attribution_label") or chunk.get("source_name") or "Green Builder"
+            surface_policy = chunk.get("surface_policy") or "show_source"
+
+        try:
+            score = float(chunk.get("score", 0.0) or 0.0)
+        except Exception:
+            score = 0.0
 
         sources.append(
             SourceItem(
-                title=clean_title,
+                title=str(clean_title),
                 url=url,
                 published_at=chunk.get("published_at"),
-                excerpt=chunk.get("text", "")[:240].strip(),
-                score=float(chunk.get("score", 0.0)),
-                visibility=visibility,
+                excerpt=str(chunk.get("text", "") or "")[:240].strip(),
+                score=score,
+                visibility="public",
                 attribution_label=attribution_label,
-                surface_policy=chunk.get("surface_policy"),
+                surface_policy=surface_policy,
             )
         )
 
-    # Ensure magazine PDF sources appear if magazine chunks were used.
-    # This fallback matters because PDFs are public archive content and must not
-    # be hidden like private draft HTML, even when private archive material also
-    # influenced the answer.
-    blog_sources = [s for s in sources if not s.url.startswith("/magazines/")]
-    pdf_sources = [s for s in sources if s.url.startswith("/magazines/")]
+    blog_sources = [s for s in sources if not s.url.startswith("/magazines/") and "/magazines/" not in s.url]
+    pdf_sources = [s for s in sources if s.url.startswith("/magazines/") or "/magazines/" in s.url]
 
     if not pdf_sources:
         seen_pdf_urls = {s.url for s in pdf_sources}
@@ -744,18 +765,16 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             if len(pdf_sources) >= 3:
                 break
 
-    final_sources = blog_sources[:4]
-
+    final_sources: list[SourceItem] = []
+    final_sources.extend(blog_sources[:5])
     if pdf_sources:
         final_sources.append(pdf_sources[0])
-
-    # If no PDF source was used, keep normal top 5 behavior.
-    if not pdf_sources:
-        final_sources = sources[:5]
+    if not final_sources:
+        final_sources = sources[:6]
 
     response = ChatResponse(
         answer=answer,
-        sources=final_sources[:5],
+        sources=final_sources[:6],
         private_archive_used=private_used,
         attribution_note=attribution_note,
     )
