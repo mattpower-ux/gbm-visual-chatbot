@@ -38,6 +38,8 @@ HTML = r"""
     .file-col h4 { margin: 0 0 6px; font-size: 14px; }
     .file-item { border-top: 1px solid #e2e8f0; padding: 6px 0; font-size: 12px; overflow-wrap: anywhere; }
     .disk-line { margin-top: 8px; font-size: 12px; color: #475569; }
+    .thumb-preview { margin-top: 10px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 10px; overflow: hidden; background: #f8fafc; display: none; }
+    .thumb-preview img { width: 100%; max-height: 180px; object-fit: cover; display: block; }
     @media (max-width: 900px) { .file-dashboard { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 560px) { .file-dashboard { grid-template-columns: 1fr; } }
     @media (max-width: 760px) {
@@ -121,6 +123,19 @@ HTML = r"""
       <div style="height:12px"></div>
       <button id="saveBtn">Save correction</button>
       <div id="status" class="muted" style="margin-top:10px"></div>
+      <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0" />
+      <h3>Override Article Thumbnail</h3>
+      <div class="muted">Paste a public blog URL, upload a replacement image, and it will be resized to 640×360 and saved as an editor override. This does not require rebuilding the index.</div>
+      <div style="height:10px"></div>
+      <label>Article URL</label>
+      <input id="thumb_url" placeholder="https://www.greenbuildermedia.com/blog/example-article" />
+      <div style="height:10px"></div>
+      <label>Replacement image</label>
+      <input type="file" id="thumb_file" accept="image/*" />
+      <div style="height:10px"></div>
+      <button id="uploadThumbBtn" type="button">Upload thumbnail override</button>
+      <div id="thumbStatus" class="muted" style="margin-top:8px">No thumbnail override uploaded yet.</div>
+      <div id="thumbPreview" class="thumb-preview"></div>
       <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0" />
       <h3>Active corrections</h3>
       <div id="corrections"></div>
@@ -520,6 +535,72 @@ async function cleanUnusedPDFs() {
   }
 }
 
+
+async function uploadThumbnailOverride() {
+  const urlInput = document.getElementById("thumb_url");
+  const fileInput = document.getElementById("thumb_file");
+  const statusEl = document.getElementById("thumbStatus");
+  const previewEl = document.getElementById("thumbPreview");
+
+  const articleUrl = (urlInput.value || "").trim();
+  const file = fileInput.files && fileInput.files[0];
+
+  if (!articleUrl) {
+    statusEl.textContent = "Paste the article URL first.";
+    return;
+  }
+
+  if (!file) {
+    statusEl.textContent = "Choose an image file first.";
+    return;
+  }
+
+  if (!file.type || !file.type.startsWith("image/")) {
+    statusEl.textContent = "Please choose a valid image file.";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  statusEl.textContent = "Uploading thumbnail override...";
+
+  try {
+    const res = await fetch(`/api/admin/upload-thumbnail?url=${encodeURIComponent(articleUrl)}`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: formData
+    });
+
+    const rawText = await res.text();
+    let data = {};
+
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      statusEl.textContent = "Upload failed. Server did not return JSON: " + rawText.slice(0, 400);
+      return;
+    }
+
+    if (!res.ok || data.ok === false) {
+      statusEl.textContent = "Upload failed: " + (data.error || data.detail || data.message || "Unknown error");
+      return;
+    }
+
+    statusEl.textContent = data.message || "Thumbnail override uploaded.";
+
+    if (data.path) {
+      const cacheBust = Date.now();
+      previewEl.style.display = "block";
+      previewEl.innerHTML = `<img src="${escapeHtml(data.path)}?v=${cacheBust}" alt="Thumbnail preview" />`;
+    }
+
+    fileInput.value = "";
+  } catch (err) {
+    statusEl.textContent = "Upload error: " + err.message;
+  }
+}
+
 function bindClick(id, fn) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("click", fn);
@@ -549,6 +630,7 @@ bindClick("ingest-pdf-inbox-btn", ingestPDFInbox);
 bindClick("check-ingest-status-btn", checkMagazineIngestStatus);
 bindClick("preview-unused-pdfs-btn", previewUnusedPDFs);
 bindClick("clean-unused-pdfs-btn", cleanUnusedPDFs);
+bindClick("uploadThumbBtn", uploadThumbnailOverride);
 bindClick("rebuild-index-btn", rebuildIndex);
 bindClick("check-rebuild-status-btn", checkRebuildStatus);
 
