@@ -6,6 +6,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import lancedb
 from openai import OpenAI
@@ -93,10 +94,14 @@ def ingest_one(filename: str) -> int:
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
+    # IMPORTANT: Do not move this file after ingest. FastAPI serves magazine PDFs
+    # directly from /data/magazines via app.mount("/magazines", ...).
+
     db = lancedb.connect(LANCEDB_DIR)
     table = db.open_table(TABLE_NAME)
 
-    pdf_url = f"{PUBLIC_MAGAZINE_PREFIX}/{pdf_path.name}"
+    # Keep the public URL browser-safe while leaving the physical PDF in /data/magazines.
+    pdf_url = f"{PUBLIC_MAGAZINE_PREFIX}/{quote(pdf_path.name)}"
 
     if url_already_ingested(table, pdf_url):
         log(f"SKIP already ingested: {pdf_path.name}")
@@ -124,14 +129,18 @@ def ingest_one(filename: str) -> int:
         for (page_num, chunk_index, text), vector in zip(pending_texts, vectors):
             pending_rows.append({
                 "id": row_id(pdf_path.name, page_num, chunk_index, text),
-                "title": source_title,
+                "title": f"{source_title} (PDF, p. {page_num})",
                 "url": pdf_url,
                 "text": text,
                 "page": page_num,
                 "published_at": "",
+                "category": "Magazine archive",
                 "visibility": "public",
-                "attribution_label": f"Magazine archive, p. {page_num}",
-                "surface_policy": "public",
+                "attribution_label": "Magazine archive",
+                "surface_policy": "show_source",
+                "source_type": "pdf",
+                "source_name": source_title,
+                "pdf_filename": pdf_path.name,
                 "vector": vector,
             })
 
