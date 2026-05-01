@@ -365,14 +365,47 @@ def _asset_safe_name(value: str) -> str:
     return value or "source"
 
 
-def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface public GBM URLs and magazine PDFs; keep true private drafts hidden.
+def _is_probably_unpublished_blog_chunk(chunk: dict[str, Any]) -> bool:
+    """Return True for blog/article chunks that look like HubSpot drafts or private archive items.
 
-    Some public Green Builder blog records were indexed with visibility='private'.
-    This function treats Green Builder public URLs and magazine archive URLs as
-    public source material while keeping internal/private draft paths hidden.
+    This protects citations. A draft/private archive record can still have a
+    public-looking Green Builder blog URL, but HubSpot-style draft exports often
+    have no published_at value. Those should remain usable as private context
+    only if they are in the archive, never as public citations.
+    """
+    url = str(chunk.get("url", "") or "").strip().lower()
+
+    is_blog_url = (
+        url.startswith("https://www.greenbuildermedia.com/blog/")
+        or url.startswith("https://greenbuildermedia.com/blog/")
+    )
+
+    if not is_blog_url:
+        return False
+
+    published_at = chunk.get("published_at") or chunk.get("publishedAt")
+
+    if not published_at:
+        return True
+
+    if any(bad in url for bad in ["preview", "draft", "hs_preview"]):
+        return True
+
+    return False
+
+
+def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
+    """Surface only cite-safe public GBM URLs and magazine PDFs.
+
+    Public-looking blog URLs are not enough. HubSpot draft/private archive
+    chunks may still have a greenbuildermedia.com/blog URL but no published_at
+    value. Those must never be offered as citations.
     """
     url = str(chunk.get("url", "") or "").strip()
+
+    if _is_probably_unpublished_blog_chunk(chunk):
+        print("Skipping unpublished/draft blog chunk as source:", url)
+        return False
 
     if (
         url.startswith("https://www.greenbuildermedia.com/")
