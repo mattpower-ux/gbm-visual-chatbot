@@ -141,29 +141,47 @@ def append_pdf_records_to_documents(pdf_path: Path) -> int:
 
 def move_current_uploads_to_queue() -> None:
     """
-    Move PDFs currently in /data/magazines into /data/magazines_queue.
-    The batch runner will then move one file at a time back into /data/magazines.
+    Move only new PDFs from /data/magazines into /data/magazines_queue.
+
+    /data/magazines is the public serving folder. PDFs already ingested/done
+    must remain there so /magazines/<filename>.pdf links keep working. If a
+    matching done copy exists, leave the public file in place.
     """
     for pdf in sorted(MAGAZINE_DIR.glob("*.pdf")):
+        done_copy = DONE_DIR / pdf.name
+        if done_copy.exists():
+            log(f"Keeping already-ingested public PDF in active folder: {pdf.name}")
+            continue
+
         target = QUEUE_DIR / pdf.name
         if target.exists():
-            log(f"Queue already has {pdf.name}; removing duplicate from active folder.")
-            pdf.unlink()
-        else:
-            shutil.move(str(pdf), str(target))
-            log(f"Queued: {pdf.name}")
+            log(f"Queue already has {pdf.name}; keeping active public copy in place.")
+            continue
+
+        shutil.move(str(pdf), str(target))
+        log(f"Queued new PDF for ingest: {pdf.name}")
 
 
 def clear_active_folder() -> None:
-    for pdf in MAGAZINE_DIR.glob("*.pdf"):
-        log(f"Removing leftover active PDF: {pdf.name}")
-        pdf.unlink()
+    """Legacy no-op.
+
+    Older versions emptied /data/magazines between files. That broke public PDF
+    links because the FastAPI app serves magazine downloads from /data/magazines.
+    Keep successful PDFs in place permanently.
+    """
+    return
 
 
 def run_ingest_for_one(pdf_path: Path) -> bool:
     active_path = MAGAZINE_DIR / pdf_path.name
 
-    clear_active_folder()
+    # Move the queued PDF into the public serving folder and KEEP it there.
+    # The chatbot's PDF links resolve through app.mount('/magazines', ...),
+    # which points at /data/magazines.
+    if active_path.exists():
+        log(f"Active public PDF already exists, replacing with queued copy: {active_path.name}")
+        active_path.unlink()
+
     shutil.move(str(pdf_path), str(active_path))
     log(f"\n=== INGESTING ONE ISSUE: {active_path.name} ===")
 
@@ -176,11 +194,15 @@ def run_ingest_for_one(pdf_path: Path) -> bool:
                 raise RuntimeError(f"Legacy ingest failed with return code {result.returncode}")
 
         log(f"SUCCESS: {active_path.name}")
+
+        # Optional audit/backup copy only. Do NOT remove from /data/magazines.
+        DONE_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(active_path), str(DONE_DIR / active_path.name))
         return True
 
     except Exception as exc:
         log(f"FAILED: {active_path.name}: {exc}")
+        FAILED_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(active_path), str(FAILED_DIR / active_path.name))
         return False
 
@@ -190,7 +212,7 @@ def main() -> None:
 
     log("Preparing queue...")
     move_current_uploads_to_queue()
-    clear_active_folder()
+    # Do not clear /data/magazines; it is the public PDF serving folder.
 
     queue = sorted(QUEUE_DIR.glob("*.pdf"))
     if MAX_FILES > 0:
@@ -226,7 +248,7 @@ def main() -> None:
             log(f"Pausing {PAUSE_SECONDS} seconds before next PDF...")
             time.sleep(PAUSE_SECONDS)
 
-    clear_active_folder()
+    # Do not clear /data/magazines here; it is the public PDF serving folder.
 
     log("\n=== BATCH INGEST COMPLETE ===")
     log(f"Processed: {processed}")
