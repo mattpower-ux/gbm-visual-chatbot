@@ -44,37 +44,6 @@ from app.retrieval import search
 
 settings = get_settings()
 
-# === Fast citation denylist for draft/dead blog slugs ===
-# This file is generated on the Render disk at /data/do_not_cite_slugs.txt.
-# The chatbot may still use these archived pages as private context, but it
-# must never show them as public citations/cards.
-DO_NOT_CITE_SLUGS: set[str] = set()
-
-
-def load_do_not_cite_slugs() -> None:
-    global DO_NOT_CITE_SLUGS
-    path = Path("/data/do_not_cite_slugs.txt")
-    if not path.exists():
-        DO_NOT_CITE_SLUGS = set()
-        print("No /data/do_not_cite_slugs.txt found; citation denylist is empty.")
-        return
-
-    try:
-        DO_NOT_CITE_SLUGS = {
-            line.strip().lower()
-            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        }
-        print(f"Loaded {len(DO_NOT_CITE_SLUGS)} do-not-cite slugs")
-    except Exception as exc:
-        DO_NOT_CITE_SLUGS = set()
-        print(f"Failed to load do-not-cite slugs: {exc}")
-
-
-def _slug_from_url(url: str) -> str:
-    path = urlparse(str(url or "")).path.strip("/")
-    return Path(path).name.strip().lower()
-
 
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
@@ -231,7 +200,6 @@ async def run_rebuild_once() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    load_do_not_cite_slugs()
     if ENABLE_BACKGROUND_CRAWL:
         asyncio.create_task(run_daily_crawl_loop())
     else:
@@ -399,58 +367,38 @@ def _asset_safe_name(value: str) -> str:
 
 
 def _is_private_archive_chunk(chunk: dict[str, Any]) -> bool:
-    """Block only explicit draft/preview/private sources from citation.
+    """Block only true draft/preview/private URLs.
 
-    Public Green Builder blog URLs should be citable even if the HTML copy
-    came from /data/draft_html, because that folder currently contains the
-    full blog archive, not only true drafts.
+    Do NOT block normal public Green Builder blog URLs. The /data/draft_html
+    folder is a full archive mirror, not a reliable signal that a URL is private.
     """
     url = str(chunk.get("url", "") or "").strip().lower()
-    visibility = str(chunk.get("visibility", "") or "").strip().lower()
-    surface_policy = str(chunk.get("surface_policy", "") or "").strip().lower()
 
-    # Always block HubSpot preview/draft URLs.
+    # Block only explicit HubSpot preview/draft URL patterns.
     if any(
         bad in url
-        for bad in ["preview", "draft", "hs_preview", "hs_preview_key", "_hcms/preview"]
+        for bad in [
+            "hs_preview",
+            "preview=true",
+            "_hcms/preview",
+            "draft=true",
+        ]
     ):
-        return True
-
-    # Normal public Green Builder blog URLs are allowed as citations/cards.
-    # Do this before honoring older visibility flags, because some public blog
-    # records may have been indexed from the local HTML archive folder.
-    if (
-        url.startswith("https://www.greenbuildermedia.com/blog/")
-        or url.startswith("https://greenbuildermedia.com/blog/")
-    ):
-        return False
-
-    # For non-public/private sources, honor explicit privacy flags.
-    if visibility in {"private", "internal", "draft", "hidden", "false", "0"}:
-        return True
-
-    if surface_policy in {"hide_source", "no_source", "do_not_cite"}:
         return True
 
     return False
 
 
 def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface cite-safe public GBM URLs and magazine PDFs.
+    """Surface normal public GBM URLs and magazine PDFs.
 
-    This permits normal public Green Builder blog URLs while still blocking
-    explicit HubSpot preview/draft URLs, non-public/private sources, and any
-    slugs listed in /data/do_not_cite_slugs.txt.
+    This restores public blog citations while still blocking explicit
+    HubSpot preview/draft URLs.
     """
     url = str(chunk.get("url", "") or "").strip()
-    slug = _slug_from_url(url)
-
-    if slug and slug in DO_NOT_CITE_SLUGS:
-        print("Skipping denylisted slug as source:", slug)
-        return False
 
     if _is_private_archive_chunk(chunk):
-        print("Skipping private/draft archive chunk as source:", url)
+        print("Skipping preview/draft URL as source:", url)
         return False
 
     if (
@@ -461,9 +409,7 @@ def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
     ):
         return True
 
-    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
-    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
-
+    return False
 
 def _thumb_for_url(url: str) -> str:
     """Return the local generated thumbnail path for a public blog/article URL."""
