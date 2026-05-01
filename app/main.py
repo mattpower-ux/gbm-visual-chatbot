@@ -1576,3 +1576,18 @@ ASSETS_DIR = Path("/data/assets")
 (ASSETS_DIR / "thumbs" / "overrides").mkdir(parents=True, exist_ok=True)
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+import shutil
+import os
+
+app = FastAPI()
+
+@app.get("/download-backup")
+def download_backup():
+    backup_path = "/tmp/chatbot_backup.zip"
+    
+    shutil.make_archive("/tmp/chatbot_backup", 'zip', "/data")
+    
+    return FileResponse(backup_path, filename="chatbot_backup.zip")
