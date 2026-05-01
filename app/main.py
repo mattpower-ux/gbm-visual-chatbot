@@ -44,7 +44,6 @@ from app.retrieval import search
 
 settings = get_settings()
 
-
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
 
@@ -200,6 +199,7 @@ async def run_rebuild_once() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    load_public_citable_blog_slugs()
     if ENABLE_BACKGROUND_CRAWL:
         asyncio.create_task(run_daily_crawl_loop())
     else:
@@ -365,40 +365,121 @@ def _asset_safe_name(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
     return value or "source"
 
+# === Public blog citation allowlist ===
+# This file is generated from the live Green Builder sitemap and contains only
+# blog slugs that should be shown as public citations/cards. It does not affect
+# retrieval: archived/private HTML can still be used as answer context.
+PUBLIC_CITABLE_BLOG_SLUGS: set[str] = set()
+PUBLIC_CITABLE_BLOG_SLUGS_LOADED = False
+PUBLIC_CITABLE_BLOG_SLUGS_PATH = Path("/data/public_citable_blog_slugs.txt")
+
+
+def _slug_from_url(url: str) -> str:
+    path = urlparse(str(url or "")).path.strip("/")
+    return Path(path).name.strip()
+
+
+def _is_blog_url(url: str) -> bool:
+    url = str(url or "").strip().lower()
+    return (
+        url.startswith("https://www.greenbuildermedia.com/blog/")
+        or url.startswith("https://greenbuildermedia.com/blog/")
+    )
+
+
+def load_public_citable_blog_slugs() -> None:
+    """Load the sitemap-derived allowlist of blog slugs safe to cite."""
+    global PUBLIC_CITABLE_BLOG_SLUGS, PUBLIC_CITABLE_BLOG_SLUGS_LOADED
+
+    if PUBLIC_CITABLE_BLOG_SLUGS_LOADED:
+        return
+
+    PUBLIC_CITABLE_BLOG_SLUGS_LOADED = True
+
+    if not PUBLIC_CITABLE_BLOG_SLUGS_PATH.exists():
+        print(f"Public citable blog slug allowlist not found: {PUBLIC_CITABLE_BLOG_SLUGS_PATH}")
+        return
+
+    try:
+        PUBLIC_CITABLE_BLOG_SLUGS = {
+            line.strip()
+            for line in PUBLIC_CITABLE_BLOG_SLUGS_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+        print(f"Loaded {len(PUBLIC_CITABLE_BLOG_SLUGS)} public citable blog slugs")
+    except Exception as exc:
+        PUBLIC_CITABLE_BLOG_SLUGS = set()
+        print(f"Failed to load public citable blog slug allowlist: {exc}")
+
+
+def _is_public_citable_blog_url(url: str) -> bool:
+    """Return True when a blog URL is present in the sitemap-derived allowlist."""
+    if not _is_blog_url(url):
+        return True
+
+    load_public_citable_blog_slugs()
+
+    # Fail open only if the allowlist is missing/empty, so a deployment cannot
+    # accidentally suppress all blog citations. When the file exists and loads,
+    # require the slug to be present.
+    if not PUBLIC_CITABLE_BLOG_SLUGS:
+        return True
+
+    return _slug_from_url(url) in PUBLIC_CITABLE_BLOG_SLUGS
+
+
 
 def _is_private_archive_chunk(chunk: dict[str, Any]) -> bool:
-    """Block only true draft/preview/private URLs.
+    """Block only explicit draft/preview/private sources from citation.
 
-    Do NOT block normal public Green Builder blog URLs. The /data/draft_html
-    folder is a full archive mirror, not a reliable signal that a URL is private.
+    Public Green Builder blog URLs should be citable even if the HTML copy
+    came from /data/draft_html, because that folder currently contains the
+    full blog archive, not only true drafts.
     """
     url = str(chunk.get("url", "") or "").strip().lower()
+    visibility = str(chunk.get("visibility", "") or "").strip().lower()
+    surface_policy = str(chunk.get("surface_policy", "") or "").strip().lower()
 
-    # Block only explicit HubSpot preview/draft URL patterns.
+    # Always block HubSpot preview/draft URLs.
     if any(
         bad in url
-        for bad in [
-            "hs_preview",
-            "preview=true",
-            "_hcms/preview",
-            "draft=true",
-        ]
+        for bad in ["preview", "draft", "hs_preview", "hs_preview_key", "_hcms/preview"]
     ):
+        return True
+
+    # Normal public Green Builder blog URLs are allowed as citations/cards.
+    # Do this before honoring older visibility flags, because some public blog
+    # records may have been indexed from the local HTML archive folder.
+    if (
+        url.startswith("https://www.greenbuildermedia.com/blog/")
+        or url.startswith("https://greenbuildermedia.com/blog/")
+    ):
+        return False
+
+    # For non-public/private sources, honor explicit privacy flags.
+    if visibility in {"private", "internal", "draft", "hidden", "false", "0"}:
+        return True
+
+    if surface_policy in {"hide_source", "no_source", "do_not_cite"}:
         return True
 
     return False
 
 
 def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface normal public GBM URLs and magazine PDFs.
+    """Surface cite-safe public GBM URLs and magazine PDFs.
 
-    This restores public blog citations while still blocking explicit
-    HubSpot preview/draft URLs.
+    This permits normal public Green Builder blog URLs while still blocking
+    explicit HubSpot preview/draft URLs and non-public/private sources.
     """
     url = str(chunk.get("url", "") or "").strip()
 
     if _is_private_archive_chunk(chunk):
-        print("Skipping preview/draft URL as source:", url)
+        print("Skipping private/draft archive chunk as source:", url)
+        return False
+
+    if _is_blog_url(url) and not _is_public_citable_blog_url(url):
+        print("Skipping blog URL not present in live sitemap allowlist:", url)
         return False
 
     if (
@@ -409,7 +490,9 @@ def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
     ):
         return True
 
-    return False
+    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
+    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
+
 
 def _thumb_for_url(url: str) -> str:
     """Return the local generated thumbnail path for a public blog/article URL."""
