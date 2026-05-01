@@ -366,54 +366,47 @@ def _asset_safe_name(value: str) -> str:
 
 
 def _is_private_archive_chunk(chunk: dict[str, Any]) -> bool:
-    """Return True for chunks that should never be offered as public citations.
+    """Block only explicit draft/preview/private sources from citation.
 
-    Important: do NOT block normal public blog articles just because published_at
-    is blank. Some crawled public blog chunks do not carry a published_at value.
-    Instead, block explicit private/draft/archive markers and preview-style URLs.
+    Public Green Builder blog URLs should be citable even if the HTML copy
+    came from /data/draft_html, because that folder currently contains the
+    full blog archive, not only true drafts.
     """
     url = str(chunk.get("url", "") or "").strip().lower()
     visibility = str(chunk.get("visibility", "") or "").strip().lower()
-    source_type = str(chunk.get("source_type", "") or "").strip().lower()
-    source_name = str(chunk.get("source_name", "") or "").strip().lower()
-    file_path = str(
-        chunk.get("file_path", "")
-        or chunk.get("path", "")
-        or chunk.get("filename", "")
-        or ""
-    ).strip().lower()
     surface_policy = str(chunk.get("surface_policy", "") or "").strip().lower()
 
-    if any(bad in url for bad in ["preview", "draft", "hs_preview", "hs_preview_key"]):
+    # Always block HubSpot preview/draft URLs.
+    if any(
+        bad in url
+        for bad in ["preview", "draft", "hs_preview", "hs_preview_key", "_hcms/preview"]
+    ):
         return True
 
+    # Normal public Green Builder blog URLs are allowed as citations/cards.
+    # Do this before honoring older visibility flags, because some public blog
+    # records may have been indexed from the local HTML archive folder.
+    if (
+        url.startswith("https://www.greenbuildermedia.com/blog/")
+        or url.startswith("https://greenbuildermedia.com/blog/")
+    ):
+        return False
+
+    # For non-public/private sources, honor explicit privacy flags.
     if visibility in {"private", "internal", "draft", "hidden", "false", "0"}:
         return True
 
     if surface_policy in {"hide_source", "no_source", "do_not_cite"}:
         return True
 
-    combined = " ".join([source_type, source_name, file_path])
-    if any(
-        marker in combined
-        for marker in [
-            "draft_html",
-            "/data/draft_html",
-            "private archive",
-            "private_archive",
-            "hubspot draft",
-        ]
-    ):
-        return True
-
     return False
 
-def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface only cite-safe public GBM URLs and magazine PDFs.
 
-    Public-looking blog URLs are not enough. HubSpot draft/private archive
-    chunks may still have a greenbuildermedia.com/blog URL but no published_at
-    value. Those must never be offered as citations.
+def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
+    """Surface cite-safe public GBM URLs and magazine PDFs.
+
+    This permits normal public Green Builder blog URLs while still blocking
+    explicit HubSpot preview/draft URLs and non-public/private sources.
     """
     url = str(chunk.get("url", "") or "").strip()
 
