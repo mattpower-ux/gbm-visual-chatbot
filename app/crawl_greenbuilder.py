@@ -257,6 +257,107 @@ def meta_content(soup: BeautifulSoup, *, property_name: str | None = None, name:
     return ""
 
 
+
+
+def first_nonempty(*values: str | None) -> str:
+    """Return the first non-empty string value."""
+    for value in values:
+        if value:
+            clean = str(value).strip()
+            if clean:
+                return clean
+    return ""
+
+
+def extract_json_ld_values(html: str) -> list[dict]:
+    """Extract JSON-LD objects from script blocks.
+
+    HubSpot blog pages often store datePublished/dateModified in JSON-LD,
+    even when article:published_time meta tags are absent.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    values: list[dict] = []
+
+    for script in soup.find_all("script", attrs={"type": re.compile(r"application/ld\+json", re.I)}):
+        raw = script.string or script.get_text(" ", strip=True)
+        if not raw:
+            continue
+        raw = raw.strip()
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            fallback: dict[str, str] = {}
+            for key in ("datePublished", "dateModified", "headline", "image"):
+                match = re.search(rf'"{key}"\s*:\s*"([^"]+)"', raw)
+                if match:
+                    fallback[key] = match.group(1).strip()
+            if fallback:
+                values.append(fallback)
+            continue
+
+        if isinstance(parsed, dict):
+            values.append(parsed)
+            graph = parsed.get("@graph")
+            if isinstance(graph, list):
+                values.extend([item for item in graph if isinstance(item, dict)])
+        elif isinstance(parsed, list):
+            values.extend([item for item in parsed if isinstance(item, dict)])
+
+    return values
+
+
+def extract_published_at(html: str, soup: BeautifulSoup) -> str | None:
+    """Extract a real publication date from HubSpot/standard article HTML."""
+    for item in extract_json_ld_values(html):
+        for key in ("datePublished", "dateCreated", "uploadDate", "dateModified"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    meta_candidates = [
+        meta_content(soup, property_name="article:published_time"),
+        meta_content(soup, name="article:published_time"),
+        meta_content(soup, property_name="og:published_time"),
+        meta_content(soup, name="publish_date"),
+        meta_content(soup, name="published_date"),
+        meta_content(soup, name="date"),
+        meta_content(soup, property_name="datePublished"),
+        meta_content(soup, name="datePublished"),
+    ]
+    for value in meta_candidates:
+        if value:
+            return value.strip()
+
+    for time_tag in soup.find_all("time"):
+        value = first_nonempty(
+            time_tag.get("datetime"),
+            time_tag.get("content"),
+            time_tag.get_text(" ", strip=True),
+        )
+        if value:
+            return value.strip()
+
+    for pattern in [
+        r'"datePublished"\s*:\s*"([^"]+)"',
+        r'"dateModified"\s*:\s*"([^"]+)"',
+    ]:
+        match = re.search(pattern, html, re.I | re.S)
+        if match:
+            return match.group(1).strip()
+
+    return None
+
+
+def extract_canonical_url(soup: BeautifulSoup, fallback_url: str) -> str:
+    """Prefer the public canonical/og URL when available."""
+    canonical = soup.find("link", attrs={"rel": lambda value: value and "canonical" in value})
+    canonical_url = canonical.get("href", "").strip() if canonical else ""
+    og_url = meta_content(soup, property_name="og:url")
+    chosen = first_nonempty(og_url, canonical_url, fallback_url)
+    if chosen.startswith("../../") or chosen.startswith("../"):
+        return fallback_url
+    return urljoin(fallback_url, chosen)
+
 def normalize_image_url(image_url: str, page_url: str) -> str:
     image_url = (image_url or "").strip()
     if not image_url:
@@ -309,26 +410,15 @@ def extract_metadata(html: str, url: str) -> Doc | None:
             text = fallback_text
     if not text or len(text) < 500:
         return None
-    published_at = None
-    for candidate in [
-        soup.find("meta", attrs={"property": "article:published_time"}),
-        soup.find("meta", attrs={"name": "article:published_time"}),
-        soup.find("meta", attrs={"property": "og:published_time"}),
-        soup.find("time"),
-    ]:
-        if not candidate:
-            continue
-        content = candidate.get("content") or candidate.get_text(" ", strip=True)
-        if content:
-            published_at = content.strip()
-            break
+    published_at = extract_published_at(html, soup)
+    canonical_url = extract_canonical_url(soup, url)
     category = None
     og_section = soup.find("meta", attrs={"property": "article:section"})
     if og_section and og_section.get("content"):
         category = og_section["content"].strip()
-    images = extract_best_image(soup, url)
+    images = extract_best_image(soup, canonical_url)
     return Doc(
-        url=url,
+        url=canonical_url,
         title=title,
         text=text,
         published_at=published_at,
