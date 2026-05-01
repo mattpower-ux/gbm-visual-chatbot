@@ -8,11 +8,12 @@ import secrets
 import subprocess
 import time
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import gspread
 from PIL import Image
@@ -56,8 +57,13 @@ app.add_middleware(
 )
 
 TODAY = date.today()
-DAILY_CRAWL_INTERVAL_SECONDS = 60 * 60 * 24
+# Background crawl scheduling
+# Enable with ENABLE_BACKGROUND_CRAWL=true. By default, the crawl/index rebuild
+# runs every 3 days at 3:00 a.m. Eastern time.
 STARTUP_CRAWL_DELAY_SECONDS = 30
+SITEMAP_REFRESH_INTERVAL_DAYS = int(os.getenv("SITEMAP_REFRESH_INTERVAL_DAYS", "3"))
+SITEMAP_REFRESH_HOUR_ET = int(os.getenv("SITEMAP_REFRESH_HOUR_ET", "3"))
+EASTERN = ZoneInfo("America/New_York")
 ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
@@ -182,14 +188,46 @@ async def run_crawl_and_reindex_once() -> None:
         print("Scheduled crawl + index rebuild completed.")
 
 
-async def run_daily_crawl_loop() -> None:
+def seconds_until_next_scheduled_crawl() -> float:
+    """Return seconds until the next scheduled crawl in America/New_York time."""
+    now = datetime.now(EASTERN)
+
+    next_run = now.replace(
+        hour=SITEMAP_REFRESH_HOUR_ET,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+    if now >= next_run:
+        next_run += timedelta(days=max(1, SITEMAP_REFRESH_INTERVAL_DAYS))
+
+    return max(60.0, (next_run - now).total_seconds())
+
+
+async def run_scheduled_crawl_loop() -> None:
+    """Run crawl + index rebuild every N days at a fixed Eastern-time hour."""
     await asyncio.sleep(STARTUP_CRAWL_DELAY_SECONDS)
+
     while True:
         try:
+            wait_seconds = seconds_until_next_scheduled_crawl()
+            next_run = datetime.now(EASTERN) + timedelta(seconds=wait_seconds)
+            print(
+                "Next scheduled crawl + index rebuild: "
+                f"{next_run.strftime('%Y-%m-%d %I:%M %p %Z')} "
+                f"(in {round(wait_seconds / 3600, 2)} hours)"
+            )
+            await asyncio.sleep(wait_seconds)
+
+            print("Running scheduled crawl + index rebuild now.")
             await run_crawl_and_reindex_once()
+
         except Exception as exc:
             print(f"Scheduled crawl + index rebuild failed: {exc}")
-        await asyncio.sleep(DAILY_CRAWL_INTERVAL_SECONDS)
+
+        # Small buffer prevents an immediate double-run after the scheduled time.
+        await asyncio.sleep(60)
 
 
 async def run_rebuild_once() -> None:
@@ -201,7 +239,7 @@ async def run_rebuild_once() -> None:
 async def startup_event() -> None:
     load_public_citable_blog_slugs()
     if ENABLE_BACKGROUND_CRAWL:
-        asyncio.create_task(run_daily_crawl_loop())
+        asyncio.create_task(run_scheduled_crawl_loop())
     else:
         print("Background crawl loop disabled by ENABLE_BACKGROUND_CRAWL.")
 
