@@ -1577,17 +1577,31 @@ ASSETS_DIR = Path("/data/assets")
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
 
-from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.responses import FileResponse
-import shutil
 import os
-
-app = FastAPI()
+import shutil
 
 @app.get("/download-backup")
-def download_backup():
-    backup_path = "/tmp/chatbot_backup.zip"
-    
-    shutil.make_archive("/tmp/chatbot_backup", 'zip', "/data")
-    
-    return FileResponse(backup_path, filename="chatbot_backup.zip")
+def download_backup(token: str = ""):
+    expected_token = os.getenv("BACKUP_TOKEN")
+
+    if not expected_token:
+        raise HTTPException(status_code=500, detail="BACKUP_TOKEN is not configured")
+
+    if token != expected_token:
+        raise HTTPException(status_code=403, detail="Invalid backup token")
+
+    backup_path_base = "/tmp/chatbot_backup"
+    backup_zip = backup_path_base + ".zip"
+
+    if os.path.exists(backup_zip):
+        os.remove(backup_zip)
+
+    shutil.make_archive(backup_path_base, "zip", "/data")
+
+    return FileResponse(
+        backup_zip,
+        filename="chatbot_backup.zip",
+        media_type="application/zip"
+    )
