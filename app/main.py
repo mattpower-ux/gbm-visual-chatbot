@@ -44,6 +44,38 @@ from app.retrieval import search
 
 settings = get_settings()
 
+# === Fast citation denylist for draft/dead blog slugs ===
+# This file is generated on the Render disk at /data/do_not_cite_slugs.txt.
+# The chatbot may still use these archived pages as private context, but it
+# must never show them as public citations/cards.
+DO_NOT_CITE_SLUGS: set[str] = set()
+
+
+def load_do_not_cite_slugs() -> None:
+    global DO_NOT_CITE_SLUGS
+    path = Path("/data/do_not_cite_slugs.txt")
+    if not path.exists():
+        DO_NOT_CITE_SLUGS = set()
+        print("No /data/do_not_cite_slugs.txt found; citation denylist is empty.")
+        return
+
+    try:
+        DO_NOT_CITE_SLUGS = {
+            line.strip().lower()
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        print(f"Loaded {len(DO_NOT_CITE_SLUGS)} do-not-cite slugs")
+    except Exception as exc:
+        DO_NOT_CITE_SLUGS = set()
+        print(f"Failed to load do-not-cite slugs: {exc}")
+
+
+def _slug_from_url(url: str) -> str:
+    path = urlparse(str(url or "")).path.strip("/")
+    return Path(path).name.strip().lower()
+
+
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
 
@@ -199,6 +231,7 @@ async def run_rebuild_once() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    load_do_not_cite_slugs()
     if ENABLE_BACKGROUND_CRAWL:
         asyncio.create_task(run_daily_crawl_loop())
     else:
@@ -406,9 +439,15 @@ def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
     """Surface cite-safe public GBM URLs and magazine PDFs.
 
     This permits normal public Green Builder blog URLs while still blocking
-    explicit HubSpot preview/draft URLs and non-public/private sources.
+    explicit HubSpot preview/draft URLs, non-public/private sources, and any
+    slugs listed in /data/do_not_cite_slugs.txt.
     """
     url = str(chunk.get("url", "") or "").strip()
+    slug = _slug_from_url(url)
+
+    if slug and slug in DO_NOT_CITE_SLUGS:
+        print("Skipping denylisted slug as source:", slug)
+        return False
 
     if _is_private_archive_chunk(chunk):
         print("Skipping private/draft archive chunk as source:", url)
