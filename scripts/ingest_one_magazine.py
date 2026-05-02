@@ -19,6 +19,14 @@ PUBLIC_MAGAZINE_PREFIX = os.getenv("PUBLIC_MAGAZINE_PREFIX", "/magazines")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 BATCH_SIZE = int(os.getenv("MAGAZINE_INGEST_BATCH_SIZE", "20"))
 
+# Chunk tuning. Smaller chunks make PDF page citations more precise.
+PDF_CHUNK_SIZE = int(os.getenv("PDF_CHUNK_SIZE", "850"))
+PDF_CHUNK_OVERLAP = int(os.getenv("PDF_CHUNK_OVERLAP", "120"))
+PDF_MIN_CHUNK_CHARS = int(os.getenv("PDF_MIN_CHUNK_CHARS", "180"))
+
+# Keep junk filtering on by default. Set PDF_SKIP_JUNK=false if you need a full archive ingest.
+PDF_SKIP_JUNK = os.getenv("PDF_SKIP_JUNK", "true").strip().lower() in {"1", "true", "yes", "on"}
+
 client = OpenAI()
 
 
@@ -27,29 +35,188 @@ def log(message: str) -> None:
 
 
 def clean_text(text: str) -> str:
+    """Normalize PDF-extracted text while preserving useful paragraph boundaries."""
+    text = text or ""
+    text = text.replace("\x00", " ")
+    text = text.replace("\u00ad", "")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def compact_text(text: str) -> str:
+    """Compact chunk text for embedding and card excerpts."""
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[str]:
-    text = clean_text(text)
+JUNK_PATTERNS = [
+    r"whirlpoolpro\.com",
+    r"count on us\s+means",
+    r"communities\s+century\s+building",
+    r"paid advertisement",
+    r"advertisement",
+    r"sponsored by",
+    r"sponsor message",
+    r"visit us at",
+    r"learn more at",
+    r"booth\s+#?\d+",
+    r"circle reader service",
+    r"©\s*\d{4}",
+]
+
+# Repeated fragments that can be removed without losing editorial article content.
+BOILERPLATE_PATTERNS = [
+    r"whirlpoolpro\.com/\S*",
+    r"count on us means.*?(?:thriving|building)\.?”?",
+    r"visit us at\s+\S+",
+    r"learn more at\s+\S+",
+]
+
+TOPIC_TERMS = [
+    "wall", "walls", "wall system", "wall systems", "wall assembly", "wall assemblies",
+    "insulation", "continuous insulation", "exterior insulation", "r-value", "r value",
+    "framing", "sheathing", "rainscreen", "air barrier", "vapor barrier", "water barrier",
+    "wrb", "weather resistant barrier", "sips", "sip", "structural insulated panels",
+    "icf", "insulated concrete forms", "panelized", "modular", "building envelope",
+    "hvac", "heat pump", "solar", "storage", "resilience", "flood", "wildfire",
+    "building science", "decarbonization", "net zero", "energy efficiency", "air sealing",
+]
+
+
+def strip_boilerplate(text: str) -> str:
+    cleaned = text or ""
+    for pattern in BOILERPLATE_PATTERNS:
+        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def uppercase_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for c in letters if c.isupper()) / len(letters)
+
+
+def is_junk_page(text: str) -> bool:
+    """Detect ad/boilerplate pages that hurt retrieval quality."""
+    t = compact_text(text).lower()
+    if not t:
+        return True
+
+    # Very short pages are usually ads, covers, fragments, or extraction noise.
+    if len(t) < 180:
+        return True
+
+    hits = sum(1 for pattern in JUNK_PATTERNS if re.search(pattern, t, re.IGNORECASE | re.DOTALL))
+    if hits >= 1 and len(t) < 900:
+        return True
+    if hits >= 2:
+        return True
+
+    # Pages with mostly all-caps marketing fragments are usually ads.
+    if uppercase_ratio(text) > 0.58 and len(t) < 1200:
+        return True
+
+    # Pages with many URLs and little prose are usually ad/resource pages.
+    url_count = len(re.findall(r"(?:https?://|www\.|\.com\b|\.org\b)", t))
+    sentence_count = len(re.findall(r"[.!?]", t))
+    if url_count >= 3 and sentence_count <= 4:
+        return True
+
+    return False
+
+
+def split_paragraphs(text: str) -> list[str]:
+    """Split PDF text into paragraph-ish units, with fallbacks for extracted line noise."""
+    raw = clean_text(text)
+    if not raw:
+        return []
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", raw) if p.strip()]
+    if len(paragraphs) <= 1:
+        # Fallback: join short lines into paragraph-like blocks.
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        paragraphs = []
+        current: list[str] = []
+        for line in lines:
+            current.append(line)
+            joined = " ".join(current)
+            if len(joined) >= 280 and re.search(r"[.!?]['\"]?$", line):
+                paragraphs.append(joined)
+                current = []
+        if current:
+            paragraphs.append(" ".join(current))
+
+    return [compact_text(p) for p in paragraphs if compact_text(p)]
+
+
+def chunk_text(text: str, chunk_size: int = PDF_CHUNK_SIZE, overlap: int = PDF_CHUNK_OVERLAP) -> list[str]:
+    """Create smaller, semantically cleaner chunks than full-page indexing."""
+    paragraphs = split_paragraphs(text)
+    if not paragraphs:
+        return []
+
+    chunks: list[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        # If one paragraph is very long, split it by sentence/character window.
+        if len(paragraph) > chunk_size * 1.4:
+            if current:
+                chunks.append(current.strip())
+                current = ""
+            chunks.extend(sliding_chunks(paragraph, chunk_size, overlap))
+            continue
+
+        proposed = f"{current}\n\n{paragraph}".strip() if current else paragraph
+        if len(proposed) <= chunk_size:
+            current = proposed
+        else:
+            if current:
+                chunks.append(current.strip())
+            current = paragraph
+
+    if current:
+        chunks.append(current.strip())
+
+    # Remove tiny fragments unless no better chunks exist.
+    filtered = [c for c in chunks if len(c) >= PDF_MIN_CHUNK_CHARS]
+    return filtered or chunks
+
+
+def sliding_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
+    text = compact_text(text)
     if not text:
         return []
 
-    chunks = []
+    chunks: list[str] = []
     start = 0
-
     while start < len(text):
-        end = start + chunk_size
+        end = min(len(text), start + chunk_size)
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-
         if end >= len(text):
             break
-
         start = max(0, end - overlap)
-
     return chunks
+
+
+def relevance_hint(text: str) -> int:
+    """Lightweight topic signal stored with rows when schema allows it."""
+    t = compact_text(text).lower()
+    score = 0
+    for term in TOPIC_TERMS:
+        if term in t:
+            score += 1
+    # Reward article-like chunks with enough prose and sentence structure.
+    if len(t) > 450:
+        score += 1
+    if len(re.findall(r"[.!?]", t)) >= 3:
+        score += 1
+    return score
 
 
 def safe_title_from_filename(filename: str) -> str:
@@ -59,7 +226,7 @@ def safe_title_from_filename(filename: str) -> str:
 
 
 def row_id(pdf_filename: str, page_num: int, chunk_index: int, text: str) -> str:
-    raw = f"{pdf_filename}|{page_num}|{chunk_index}|{text[:80]}"
+    raw = f"{pdf_filename}|{page_num}|{chunk_index}|{text[:120]}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -79,11 +246,46 @@ def url_already_ingested(table, pdf_url: str) -> bool:
         return False
 
 
+def table_field_names(table) -> set[str]:
+    """Return current LanceDB field names so this script works with old and new schemas."""
+    try:
+        return set(table.schema.names)
+    except Exception:
+        try:
+            return set(table.to_pandas().columns)
+        except Exception:
+            return set()
+
+
+def normalize_row_for_table(row: dict, fields: set[str]) -> dict:
+    """Drop unsupported fields and fill known existing fields.
+
+    Older GBM LanceDB tables may not yet have pdf_filename/page/source_type columns.
+    This function keeps ingest from failing while still using richer fields on a rebuilt schema.
+    """
+    if not fields:
+        return row
+
+    # Match the older build_index schema when present.
+    defaults = {
+        "embed_text": f"Title: {row.get('title', '')}\nCategory: {row.get('category', '')}\nText: {row.get('text', '')}",
+        "stale": False,
+        "stale_reasons": [],
+        "governance_note": None,
+        "chunk_count": row.get("chunk_count"),
+        "chunk_index": row.get("chunk_index"),
+    }
+    full = {**defaults, **row}
+    return {key: full.get(key) for key in fields if key in full}
+
+
 def flush_rows(table, rows: list[dict]) -> int:
     if not rows:
         return 0
 
-    table.add(rows)
+    fields = table_field_names(table)
+    normalized = [normalize_row_for_table(row, fields) for row in rows]
+    table.add(normalized)
     count = len(rows)
     rows.clear()
     return count
@@ -112,10 +314,13 @@ def ingest_one(filename: str) -> int:
     total_pages = len(reader.pages)
 
     log(f"Processing {pdf_path.name} ({total_pages} pages)")
+    log(f"Junk-page filtering: {'ON' if PDF_SKIP_JUNK else 'OFF'}")
+    log(f"Chunk size: {PDF_CHUNK_SIZE}; overlap: {PDF_CHUNK_OVERLAP}; min chars: {PDF_MIN_CHUNK_CHARS}")
 
-    pending_texts: list[tuple[int, int, str]] = []
+    pending_texts: list[tuple[int, int, int, str]] = []
     pending_rows: list[dict] = []
     chunks_added = 0
+    pages_skipped = 0
 
     def flush_pending() -> int:
         nonlocal pending_texts, pending_rows
@@ -123,15 +328,18 @@ def ingest_one(filename: str) -> int:
         if not pending_texts:
             return 0
 
-        texts = [x[2] for x in pending_texts]
+        # Embed the clean text used for retrieval. Row-level embed_text is also stored when supported.
+        texts = [x[3] for x in pending_texts]
         vectors = embed_batch(texts)
 
-        for (page_num, chunk_index, text), vector in zip(pending_texts, vectors):
-            pending_rows.append({
+        for (page_num, chunk_index, chunk_count, text), vector in zip(pending_texts, vectors):
+            title = f"{source_title} (PDF, p. {page_num})"
+            row = {
                 "id": row_id(pdf_path.name, page_num, chunk_index, text),
-                "title": f"{source_title} (PDF, p. {page_num})",
+                "title": title,
                 "url": pdf_url,
                 "text": text,
+                "embed_text": f"Title: {title}\nSource: Green Builder Magazine PDF\nPage: {page_num}\nText: {text}",
                 "page": page_num,
                 "published_at": "",
                 "category": "Magazine archive",
@@ -141,24 +349,42 @@ def ingest_one(filename: str) -> int:
                 "source_type": "pdf",
                 "source_name": source_title,
                 "pdf_filename": pdf_path.name,
+                "chunk_index": chunk_index - 1,
+                "chunk_count": chunk_count,
+                "relevance_hint": relevance_hint(text),
+                "stale": False,
+                "stale_reasons": [],
+                "governance_note": None,
                 "vector": vector,
-            })
+            }
+            pending_rows.append(row)
 
         pending_texts.clear()
         return flush_rows(table, pending_rows)
 
     for page_num, page in enumerate(reader.pages, start=1):
         try:
-            page_text = clean_text(page.extract_text() or "")
+            raw_page_text = clean_text(page.extract_text() or "")
         except Exception as exc:
             log(f"Skipping page {page_num}: {exc}")
             continue
 
+        if PDF_SKIP_JUNK and is_junk_page(raw_page_text):
+            pages_skipped += 1
+            log(f"  Skipping likely junk/ad page {page_num}/{total_pages}")
+            continue
+
+        page_text = strip_boilerplate(raw_page_text)
         chunks = chunk_text(page_text)
         log(f"  Page {page_num}/{total_pages}: {len(chunks)} chunks")
 
+        chunk_count = len(chunks)
         for chunk_index, chunk in enumerate(chunks, start=1):
-            pending_texts.append((page_num, chunk_index, chunk))
+            # Avoid indexing residual boilerplate fragments.
+            if PDF_SKIP_JUNK and is_junk_page(chunk):
+                continue
+
+            pending_texts.append((page_num, chunk_index, chunk_count, chunk))
 
             if len(pending_texts) >= BATCH_SIZE:
                 written = flush_pending()
@@ -169,7 +395,7 @@ def ingest_one(filename: str) -> int:
     written = flush_pending()
     chunks_added += written
 
-    log(f"DONE {pdf_path.name}: added {chunks_added} chunks")
+    log(f"DONE {pdf_path.name}: added {chunks_added} chunks; skipped {pages_skipped} likely junk/ad pages")
     return chunks_added
 
 
