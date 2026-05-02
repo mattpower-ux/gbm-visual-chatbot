@@ -647,7 +647,129 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
     )
 
 
-def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
+PDF_RELEVANCE_STOPWORDS = {
+    "about", "after", "again", "against", "also", "and", "any", "are", "article",
+    "best", "better", "bot", "builder", "building", "can", "does", "for", "from",
+    "gbm", "give", "green", "guide", "have", "home", "homes", "house", "how",
+    "into", "magazine", "more", "most", "new", "page", "pdf", "should", "show",
+    "sustainable", "sustainability", "system", "systems", "tell", "that", "the",
+    "their", "there", "this", "use", "uses", "what", "when", "where", "which",
+    "with", "would", "your",
+}
+
+PDF_TOPIC_EXPANSIONS = {
+    "wall": {"wall", "walls", "assembly", "assemblies", "enclosure", "enclosures", "sheathing", "cladding", "rainscreen", "framing", "stud", "studs", "wrb", "housewrap", "siding", "exterior", "insulation", "sip", "sips", "icf", "icfs"},
+    "insulation": {"insulation", "insulate", "insulated", "r-value", "r value", "thermal", "foam", "cellulose", "fiberglass", "mineral", "wool", "continuous"},
+    "window": {"window", "windows", "glazing", "glass", "u-value", "u value", "shgc", "pane", "film", "frame", "fenestration"},
+    "solar": {"solar", "pv", "photovoltaic", "panel", "panels", "inverter", "battery", "storage", "net metering"},
+    "hvac": {"hvac", "heat", "pump", "cooling", "heating", "furnace", "air conditioner", "seer", "duct", "ducts"},
+    "water": {"water", "plumbing", "irrigation", "rainwater", "greywater", "graywater", "drought", "fixture", "fixtures"},
+    "flood": {"flood", "flooding", "resilience", "resilient", "hurricane", "storm", "wind", "disaster", "elevation"},
+}
+
+
+def _normalize_terms(text: str) -> set[str]:
+    """Extract meaningful lowercase terms for lightweight relevance checks."""
+    raw_terms = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", (text or "").lower())
+    terms: set[str] = set()
+    for term in raw_terms:
+        term = term.strip("-_")
+        if not term or term in PDF_RELEVANCE_STOPWORDS:
+            continue
+        terms.add(term)
+        # Simple singularization helps match wall/walls, systems/system, assemblies/assembly.
+        if len(term) > 4 and term.endswith("ies"):
+            terms.add(term[:-3] + "y")
+        elif len(term) > 4 and term.endswith("s"):
+            terms.add(term[:-1])
+    return terms
+
+
+def _expanded_query_terms(question: str) -> set[str]:
+    terms = _normalize_terms(question)
+    expanded = set(terms)
+    for term in list(terms):
+        singular = term[:-1] if term.endswith("s") else term
+        if term in PDF_TOPIC_EXPANSIONS:
+            expanded.update(PDF_TOPIC_EXPANSIONS[term])
+        if singular in PDF_TOPIC_EXPANSIONS:
+            expanded.update(PDF_TOPIC_EXPANSIONS[singular])
+    return {t.lower() for t in expanded if t}
+
+
+def _pdf_relevance_score(chunk: dict[str, Any], question: str) -> float:
+    """Return a conservative lexical relevance score for a PDF page/chunk.
+
+    Semantic vector search can retrieve broadly related magazine pages. Before
+    showing a PDF as a citation/card, require the cited page text itself to share
+    meaningful terms with the user's question. This prevents arbitrary magazine
+    pages from appearing just because a PDF fallback search found a weak match.
+    """
+    query_terms = _expanded_query_terms(question)
+    if not query_terms:
+        return 0.0
+
+    haystack = " ".join([
+        str(chunk.get("title", "")),
+        str(chunk.get("source_name", "")),
+        str(chunk.get("pdf_filename", "")),
+        str(chunk.get("text", "")),
+    ]).lower()
+
+    text_terms = _normalize_terms(haystack)
+    if not text_terms:
+        return 0.0
+
+    # Phrase matches get extra credit because they are strong evidence.
+    phrase_hits = 0
+    for phrase in sorted(query_terms, key=len, reverse=True):
+        if " " in phrase and phrase in haystack:
+            phrase_hits += 2
+
+    overlap = query_terms & text_terms
+    overlap_count = len(overlap) + phrase_hits
+    base = overlap_count / max(1, min(len(query_terms), 10))
+
+    try:
+        vector_score = float(chunk.get("score", 0.0) or 0.0)
+    except Exception:
+        vector_score = 0.0
+
+    # Keep vector score as a small tiebreaker only; lexical support is required.
+    return base + min(max(vector_score, 0.0), 1.0) * 0.05
+
+
+def _pdf_chunk_relevant_to_question(chunk: dict[str, Any], question: str) -> bool:
+    if not _is_magazine_chunk(chunk):
+        return True
+
+    query_terms = _expanded_query_terms(question)
+    if not query_terms:
+        return False
+
+    haystack = " ".join([
+        str(chunk.get("title", "")),
+        str(chunk.get("source_name", "")),
+        str(chunk.get("pdf_filename", "")),
+        str(chunk.get("text", "")),
+    ]).lower()
+    text_terms = _normalize_terms(haystack)
+    overlap = query_terms & text_terms
+
+    # Require at least one strong topic match for short queries and at least two
+    # meaningful matches when possible. This blocks weak pages with only generic
+    # words like "green" or "building".
+    if len(query_terms) <= 3:
+        return len(overlap) >= 1 and _pdf_relevance_score(chunk, question) >= 0.25
+    return len(overlap) >= 2 and _pdf_relevance_score(chunk, question) >= 0.20
+
+
+def _sort_pdf_chunks_by_relevance(chunks: list[dict[str, Any]], question: str) -> list[dict[str, Any]]:
+    relevant = [chunk for chunk in chunks if _is_magazine_chunk(chunk) and _pdf_chunk_relevant_to_question(chunk, question)]
+    return sorted(relevant, key=lambda c: _pdf_relevance_score(c, question), reverse=True)
+
+
+def _magazine_source_from_chunk(chunk: dict[str, Any], question: str = "") -> SourceItem | None:
     """Build a public SourceItem from a retrieved PDF chunk.
 
     This is a fallback safety net: even if a PDF chunk was missed by the normal
@@ -655,6 +777,10 @@ def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
     because they are public archive material, not private draft material.
     """
     if not _is_magazine_chunk(chunk):
+        return None
+
+    if question and not _pdf_chunk_relevant_to_question(chunk, question):
+        print("Skipping weak magazine PDF source for question:", chunk.get("url") or chunk.get("pdf_filename"))
         return None
 
     visibility = chunk.get("visibility", "public")
@@ -713,8 +839,8 @@ def _find_relevant_magazine_sources(question: str, seen_urls: set[str], limit: i
 
     found: list[SourceItem] = []
 
-    for chunk in magazine_chunks:
-        pdf_source = _magazine_source_from_chunk(chunk)
+    for chunk in _sort_pdf_chunks_by_relevance(magazine_chunks, question):
+        pdf_source = _magazine_source_from_chunk(chunk, question)
         if not pdf_source:
             continue
         if pdf_source.url in seen_urls:
@@ -1043,6 +1169,10 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
         is_magazine = _is_magazine_chunk(chunk)
 
+        if is_magazine and not _pdf_chunk_relevant_to_question(chunk, req.question):
+            print("Skipping weak magazine PDF chunk as source:", chunk.get("url") or chunk.get("pdf_filename"))
+            continue
+
         if is_magazine:
             clean_title = (
                 chunk.get("source_name")
@@ -1091,8 +1221,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
     if not pdf_sources:
         seen_pdf_urls = {s.url for s in pdf_sources}
 
-        for chunk in chunks:
-            pdf_source = _magazine_source_from_chunk(chunk)
+        for chunk in _sort_pdf_chunks_by_relevance(chunks, req.question):
+            pdf_source = _magazine_source_from_chunk(chunk, req.question)
             if pdf_source and pdf_source.url not in seen_pdf_urls:
                 pdf_sources.append(pdf_source)
                 seen_pdf_urls.add(pdf_source.url)
@@ -1103,6 +1233,12 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             pdf_sources.extend(
                 _find_relevant_magazine_sources(req.question, seen_pdf_urls, limit=1)
             )
+
+    # Keep only PDF citations that have page-level support for the user's question.
+    pdf_sources = [
+        s for s in pdf_sources
+        if _pdf_chunk_relevant_to_question(_find_chunk_for_source(_source_to_dict(s), chunks), req.question)
+    ]
 
     final_sources: list[SourceItem] = []
     final_sources.extend(blog_sources[:5])
