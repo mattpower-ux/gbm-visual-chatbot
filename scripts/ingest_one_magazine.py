@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import sys
@@ -258,33 +257,48 @@ def table_field_names(table) -> set[str]:
             return set()
 
 
-def _schema_safe_value(value):
-    """Coerce metadata values into LanceDB/Arrow-safe scalar values.
+def _schema_safe_value(key: str, value):
+    """Return values in a form compatible with the existing LanceDB schema.
 
-    The existing greenbuilder_chunks table may have older columns typed as
-    strings/binary-like values. Lists such as [] can crash PyArrow with
-    `Expected bytes, got a list object`, so metadata must be scalar.
+    Important: the vector column must stay a list[float] of length 1536.
+    Do not JSON-encode or stringify it. Metadata lists/dicts, however, should
+    be stored as simple strings for older tables whose schema expects text.
     """
-    if value is None:
+    if key == "vector":
+        if not isinstance(value, list):
+            raise TypeError(f"vector must be list[float], got {type(value).__name__}")
+        if len(value) != 1536:
+            raise ValueError(f"vector length must be 1536, got {len(value)}")
+        return [float(x) for x in value]
+
+    if key == "stale_reasons":
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            return "; ".join(str(x) for x in value)
+        return str(value)
+
+    if key == "governance_note" and value is None:
         return ""
-    if isinstance(value, (list, dict, tuple, set)):
+
+    # Older LanceDB schemas often cannot accept arbitrary list/dict metadata.
+    # Keep only vector as a list; stringify other complex metadata.
+    if isinstance(value, (list, tuple, set, dict)):
         try:
             return json.dumps(value, ensure_ascii=False)
         except Exception:
             return str(value)
+
     return value
 
 
 def normalize_row_for_table(row: dict, fields: set[str]) -> dict:
-    """Drop unsupported fields and fill known existing fields.
+    """Drop unsupported fields and coerce supported fields to schema-safe values.
 
     Older GBM LanceDB tables may not yet have pdf_filename/page/source_type columns.
     This function keeps ingest from failing while still using richer fields on a rebuilt schema.
     """
-    if not fields:
-        return {key: _schema_safe_value(value) for key, value in row.items()}
-
-    # Match the older build_index schema when present. Keep metadata scalar.
+    # Match the older build_index schema when present.
     defaults = {
         "embed_text": f"Title: {row.get('title', '')}\nCategory: {row.get('category', '')}\nText: {row.get('text', '')}",
         "stale": False,
@@ -294,7 +308,17 @@ def normalize_row_for_table(row: dict, fields: set[str]) -> dict:
         "chunk_index": row.get("chunk_index"),
     }
     full = {**defaults, **row}
-    return {key: _schema_safe_value(full.get(key)) for key in fields if key in full}
+
+    if fields:
+        keys = [key for key in fields if key in full]
+    else:
+        keys = list(full.keys())
+
+    normalized = {}
+    for key in keys:
+        normalized[key] = _schema_safe_value(key, full.get(key))
+
+    return normalized
 
 
 def flush_rows(table, rows: list[dict]) -> int:
@@ -371,8 +395,8 @@ def ingest_one(filename: str) -> int:
                 "chunk_count": chunk_count,
                 "relevance_hint": relevance_hint(text),
                 "stale": False,
-                "stale_reasons": "",
-                "governance_note": "",
+                "stale_reasons": [],
+                "governance_note": None,
                 "vector": vector,
             }
             pending_rows.append(row)
