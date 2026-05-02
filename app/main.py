@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from google.oauth2.service_account import Credentials
+from openai import OpenAI
 
 from app.admin_ui import HTML as ADMIN_HTML
 from app.config import get_settings
@@ -44,6 +45,9 @@ from app.models import (
 from app.retrieval import search
 
 settings = get_settings()
+
+INSIGHTS_MODEL = os.getenv("INSIGHTS_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+INSIGHTS_CLIENT = OpenAI()
 
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
@@ -789,26 +793,99 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
     return cards[:6], magazines[:3]
 
 
-def _build_key_insights(answer: str) -> list[dict[str, str]]:
-    """Create lightweight insight cards from the generated answer."""
+def _fallback_key_insights(answer: str) -> list[dict[str, str]]:
+    """Fallback insight cards if the separate model summary fails."""
     text = answer or ""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    insights: list[dict[str, str]] = []
-
     titles = ["Main takeaway", "Practical implication", "Tradeoff to consider"]
     icons = ["lightbulb", "check-circle", "scale"]
+    insights: list[dict[str, str]] = []
 
     for idx, paragraph in enumerate(paragraphs[:3]):
         short = paragraph
-        if len(short) > 260:
-            match = re.match(r"^(.{120,260}?[.!?])\s", short + " ")
-            short = match.group(1).strip() if match else short[:260].rsplit(" ", 1)[0].strip() + "..."
+        if len(short) > 220:
+            match = re.match(r"^(.{90,220}?[.!?])\s", short + " ")
+            short = match.group(1).strip() if match else short[:220].rsplit(" ", 1)[0].strip() + "..."
         insights.append({"title": titles[idx], "text": short, "icon": icons[idx]})
 
     if not insights and text:
         insights.append({"title": "Main takeaway", "text": _first_paragraph(text), "icon": "lightbulb"})
 
     return insights
+
+
+def _clean_insight_text(value: Any, max_chars: int = 185) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= max_chars:
+        return text
+    match = re.match(rf"^(.{{80,{max_chars}}}?[.!?])\s", text + " ")
+    if match:
+        return match.group(1).strip()
+    return text[:max_chars].rsplit(" ", 1)[0].strip() + "..."
+
+
+def _build_key_insights(answer: str) -> list[dict[str, str]]:
+    """Create concise, non-repetitive editorial insight cards from the generated answer.
+
+    This intentionally uses a second, small model call so the visual cards are
+    tighter than the main answer instead of simply repeating its first paragraphs.
+    """
+    answer_text = (answer or "").strip()
+    if not answer_text:
+        return []
+
+    fallback = _fallback_key_insights(answer_text)
+
+    try:
+        prompt = (
+            "You are an editor for Green Builder Media. Create three compact insight cards "
+            "from the answer below. Do not repeat sentences from the answer. Synthesize. "
+            "Each text field must be useful, specific, and 16-28 words. "
+            "Return ONLY valid JSON as an array with exactly three objects. "
+            "Each object must have title and text. The titles must be exactly: "
+            "Main takeaway, Practical implication, Tradeoff to consider.\n\n"
+            f"ANSWER:\n{answer_text[:3500]}"
+        )
+
+        result = INSIGHTS_CLIENT.chat.completions.create(
+            model=INSIGHTS_MODEL,
+            temperature=0.25,
+            max_tokens=260,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You write concise editorial summaries and return strict JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        raw = result.choices[0].message.content or ""
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return fallback
+
+        expected_titles = ["Main takeaway", "Practical implication", "Tradeoff to consider"]
+        icons = ["lightbulb", "check-circle", "scale"]
+        insights: list[dict[str, str]] = []
+
+        for idx, title in enumerate(expected_titles):
+            item = parsed[idx] if idx < len(parsed) and isinstance(parsed[idx], dict) else {}
+            text = _clean_insight_text(item.get("text", ""))
+            if not text:
+                text = fallback[idx]["text"] if idx < len(fallback) else ""
+            insights.append({"title": title, "text": text, "icon": icons[idx]})
+
+        return insights
+
+    except Exception as exc:
+        print(f"Insight card generation failed; using fallback: {exc}")
+        return fallback
 
 
 def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
