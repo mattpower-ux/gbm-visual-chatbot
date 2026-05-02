@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -406,6 +406,121 @@ def _asset_safe_name(value: str) -> str:
     value = Path(value or "source").name
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
     return value or "source"
+
+
+def _safe_cover_stem_from_pdf_name(value: str) -> str:
+    """Return the cover-image stem used for magazine PDF cover files.
+
+    Handles both plain PDF names and URL-encoded magazine URLs, so:
+    /magazines/001%20Green%20Builder%20Jan-Feb%202026.pdf
+    maps to:
+    /assets/covers/001-Green-Builder-Jan-Feb-2026.jpg
+    """
+    decoded = unquote(str(value or ""))
+    filename = Path(decoded).name or "magazine"
+    stem = Path(filename).stem
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-")
+    return safe_stem or "magazine"
+
+
+def _cover_disk_path_for_pdf(value: str) -> Path:
+    return Path("/data/assets/covers") / f"{_safe_cover_stem_from_pdf_name(value)}.jpg"
+
+
+def _cover_for_magazine_url(url: str) -> str:
+    """Return the best public cover URL for a magazine PDF.
+
+    This is robust to URL-encoded PDF links created by the newer PDF ingest
+    path and to the hyphenated cover filenames already on disk.
+    """
+    cover_path = _cover_disk_path_for_pdf(url)
+    if cover_path.exists() and cover_path.stat().st_size > 1000:
+        return f"/assets/covers/{cover_path.name}"
+
+    # Support a couple of legacy naming variants if any older covers exist.
+    decoded = unquote(str(url or ""))
+    legacy_candidates = [
+        Path("/data/assets/covers") / f"{Path(Path(decoded).name).stem}.jpg",
+        Path("/data/assets/covers") / f"{_asset_safe_name(decoded).removesuffix('.pdf')}.jpg",
+    ]
+    for candidate in legacy_candidates:
+        try:
+            if candidate.exists() and candidate.stat().st_size > 1000:
+                return f"/assets/covers/{candidate.name}"
+        except Exception:
+            pass
+
+    # Return the deterministic future path. If a cover generator later creates
+    # the file, the same URL will begin resolving without changing the index.
+    return f"/assets/covers/{cover_path.name}"
+
+
+def ensure_magazine_cover_for_pdf(pdf_path: Path) -> None:
+    """Create a first-page JPG cover for an ingested PDF when possible.
+
+    Existing covers are left untouched. If PyMuPDF is unavailable or rendering
+    fails, create a small issue-specific placeholder so the UI never falls back
+    to a broken image for future admin-uploaded PDFs.
+    """
+    try:
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists() or not pdf_path.name.lower().endswith(".pdf"):
+            return
+
+        cover_path = _cover_disk_path_for_pdf(pdf_path.name)
+        cover_path.parent.mkdir(parents=True, exist_ok=True)
+        if cover_path.exists() and cover_path.stat().st_size > 1000:
+            return
+
+        try:
+            import fitz  # PyMuPDF, optional
+
+            doc = fitz.open(str(pdf_path))
+            if len(doc) == 0:
+                raise RuntimeError("PDF has no pages")
+            page = doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img.thumbnail((640, 900))
+            img.save(cover_path, "JPEG", quality=88, optimize=True)
+            doc.close()
+            print(f"Generated magazine cover: {cover_path}")
+            return
+        except Exception as render_exc:
+            print(f"PDF cover render unavailable for {pdf_path.name}; creating placeholder: {render_exc}")
+
+        # Fallback placeholder: better than a broken/missing image and unique
+        # to the PDF title. Real cover generation can replace it later.
+        img = Image.new("RGB", (420, 560), (0, 122, 102))
+        from PIL import ImageDraw
+
+        draw = ImageDraw.Draw(img)
+        title = Path(pdf_path.name).stem.replace("-", " ").replace("_", " ")
+        words = title.split()
+        lines: list[str] = []
+        line = ""
+        for word in words:
+            trial = f"{line} {word}".strip()
+            if len(trial) > 22 and line:
+                lines.append(line)
+                line = word
+            else:
+                line = trial
+        if line:
+            lines.append(line)
+
+        draw.rectangle((18, 18, 402, 542), outline=(230, 245, 240), width=4)
+        draw.text((42, 70), "GREEN BUILDER", fill=(255, 255, 255))
+        y = 170
+        for line in lines[:8]:
+            draw.text((42, y), line, fill=(255, 255, 255))
+            y += 34
+        draw.text((42, 500), "Magazine Archive", fill=(230, 245, 240))
+        img.save(cover_path, "JPEG", quality=88, optimize=True)
+        print(f"Generated placeholder magazine cover: {cover_path}")
+
+    except Exception as exc:
+        print(f"Failed to ensure magazine cover for {pdf_path}: {exc}")
 
 # === Public blog citation allowlist ===
 # This file is generated from the live Green Builder sitemap and contains only
@@ -873,13 +988,11 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
         remote_image = _remote_image_from_chunk(chunk)
 
         if url.startswith("/magazines/") or "/magazines/" in url or str(source.get("source_type", "")) == "pdf":
-            filename = _asset_safe_name(url)
-            stem = Path(filename).stem
             magazines.append(
                 {
                     "title": title,
                     "url": url,
-                    "cover": f"/assets/covers/{stem}.jpg",
+                    "cover": _cover_for_magazine_url(url),
                     "issue": chunk.get("source_name") or source.get("attribution_label") or "Magazine archive",
                     "page": chunk.get("page"),
                     "type": "pdf",
@@ -1571,6 +1684,7 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                     shutil.move(str(inbox_file), str(processing_file))
 
                 if magazine_file.exists() and magazine_file.stat().st_size > 0:
+                    ensure_magazine_cover_for_pdf(magazine_file)
                     skipped.append({
                         "file": filename,
                         "reason": "A PDF with this filename already exists in /data/magazines. Skipped to avoid duplicate ingest.",
@@ -1598,6 +1712,7 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                         if magazine_file.exists():
                             shutil.move(str(magazine_file), str(failed_file))
                     else:
+                        ensure_magazine_cover_for_pdf(magazine_file)
                         succeeded.append({"file": filename, "stored_at": str(magazine_file)})
                         done_marker.write_text(f"Ingested successfully on {datetime.utcnow().isoformat()} UTC. Stored at: {magazine_file}\n")
 
