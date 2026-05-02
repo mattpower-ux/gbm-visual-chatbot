@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sys
@@ -257,6 +258,23 @@ def table_field_names(table) -> set[str]:
             return set()
 
 
+def _schema_safe_value(value):
+    """Coerce metadata values into LanceDB/Arrow-safe scalar values.
+
+    The existing greenbuilder_chunks table may have older columns typed as
+    strings/binary-like values. Lists such as [] can crash PyArrow with
+    `Expected bytes, got a list object`, so metadata must be scalar.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, dict, tuple, set)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return value
+
+
 def normalize_row_for_table(row: dict, fields: set[str]) -> dict:
     """Drop unsupported fields and fill known existing fields.
 
@@ -264,19 +282,19 @@ def normalize_row_for_table(row: dict, fields: set[str]) -> dict:
     This function keeps ingest from failing while still using richer fields on a rebuilt schema.
     """
     if not fields:
-        return row
+        return {key: _schema_safe_value(value) for key, value in row.items()}
 
-    # Match the older build_index schema when present.
+    # Match the older build_index schema when present. Keep metadata scalar.
     defaults = {
         "embed_text": f"Title: {row.get('title', '')}\nCategory: {row.get('category', '')}\nText: {row.get('text', '')}",
         "stale": False,
-        "stale_reasons": [],
-        "governance_note": None,
+        "stale_reasons": "",
+        "governance_note": "",
         "chunk_count": row.get("chunk_count"),
         "chunk_index": row.get("chunk_index"),
     }
     full = {**defaults, **row}
-    return {key: full.get(key) for key in fields if key in full}
+    return {key: _schema_safe_value(full.get(key)) for key in fields if key in full}
 
 
 def flush_rows(table, rows: list[dict]) -> int:
@@ -353,8 +371,8 @@ def ingest_one(filename: str) -> int:
                 "chunk_count": chunk_count,
                 "relevance_hint": relevance_hint(text),
                 "stale": False,
-                "stale_reasons": [],
-                "governance_note": None,
+                "stale_reasons": "",
+                "governance_note": "",
                 "vector": vector,
             }
             pending_rows.append(row)
