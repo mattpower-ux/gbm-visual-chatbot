@@ -17,4 +17,3 @@ pypdf
 pillow
 requests
 PyMuPDF
-pytesseract
