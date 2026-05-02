@@ -27,6 +27,12 @@ PDF_MIN_CHUNK_CHARS = int(os.getenv("PDF_MIN_CHUNK_CHARS", "180"))
 # Keep junk filtering on by default. Set PDF_SKIP_JUNK=false if you need a full archive ingest.
 PDF_SKIP_JUNK = os.getenv("PDF_SKIP_JUNK", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+# OCR fallback for image-heavy PDFs/flyers. Requires PyMuPDF + pytesseract
+# and the tesseract system binary to be available in the Render environment.
+PDF_ENABLE_OCR = os.getenv("PDF_ENABLE_OCR", "true").strip().lower() in {"1", "true", "yes", "on"}
+PDF_OCR_MIN_CHARS = int(os.getenv("PDF_OCR_MIN_CHARS", "500"))
+PDF_OCR_DPI_SCALE = float(os.getenv("PDF_OCR_DPI_SCALE", "2.0"))
+
 client = OpenAI()
 
 
@@ -333,6 +339,100 @@ def flush_rows(table, rows: list[dict]) -> int:
     return count
 
 
+
+def extract_text_with_pymupdf(pdf_path: Path, page_index_zero_based: int) -> str:
+    """Optional PyMuPDF text fallback for pages where pypdf extracts little text."""
+    try:
+        import fitz  # PyMuPDF
+
+        with fitz.open(str(pdf_path)) as doc:
+            if page_index_zero_based >= len(doc):
+                return ""
+            page = doc[page_index_zero_based]
+            return clean_text(page.get_text("text") or "")
+    except Exception as exc:
+        log(f"  PyMuPDF text fallback unavailable/failed on page {page_index_zero_based + 1}: {exc}")
+        return ""
+
+
+def ocr_page_with_pymupdf(pdf_path: Path, page_index_zero_based: int) -> str:
+    """OCR a PDF page by rendering it with PyMuPDF and reading it with pytesseract.
+
+    This is intended for one-page flyers, speaker sheets, scans, and pages whose
+    text is embedded in images rather than extractable PDF text. If OCR
+    dependencies are unavailable, it fails open and returns an empty string so
+    normal magazine ingest still works.
+    """
+    if not PDF_ENABLE_OCR:
+        return ""
+
+    try:
+        import fitz  # PyMuPDF
+        import pytesseract
+        from PIL import Image
+
+        with fitz.open(str(pdf_path)) as doc:
+            if page_index_zero_based >= len(doc):
+                return ""
+            page = doc[page_index_zero_based]
+            matrix = fitz.Matrix(PDF_OCR_DPI_SCALE, PDF_OCR_DPI_SCALE)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            text = pytesseract.image_to_string(img, lang="eng")
+            return clean_text(text)
+    except Exception as exc:
+        log(f"  OCR unavailable/failed on page {page_index_zero_based + 1}: {exc}")
+        return ""
+
+
+def extract_page_text(pdf_path: Path, pypdf_page, page_num: int) -> tuple[str, str]:
+    """Extract page text using pypdf, PyMuPDF fallback, then OCR fallback.
+
+    Returns (text, method). OCR is used only when extractable text is shorter
+    than PDF_OCR_MIN_CHARS, so full magazines are not slowed down unnecessarily.
+    """
+    methods: list[str] = []
+    candidates: list[str] = []
+
+    try:
+        text = clean_text(pypdf_page.extract_text() or "")
+        if text:
+            candidates.append(text)
+            methods.append(f"pypdf:{len(text)}")
+    except Exception as exc:
+        log(f"  pypdf extraction failed on page {page_num}: {exc}")
+
+    best = max(candidates, key=len, default="")
+
+    if len(best) < PDF_OCR_MIN_CHARS:
+        pymupdf_text = extract_text_with_pymupdf(pdf_path, page_num - 1)
+        if pymupdf_text:
+            candidates.append(pymupdf_text)
+            methods.append(f"pymupdf:{len(pymupdf_text)}")
+            best = max(candidates, key=len, default="")
+
+    if len(best) < PDF_OCR_MIN_CHARS:
+        ocr_text = ocr_page_with_pymupdf(pdf_path, page_num - 1)
+        if ocr_text:
+            candidates.append(ocr_text)
+            methods.append(f"ocr:{len(ocr_text)}")
+            best = max(candidates, key=len, default="")
+
+    method = "+".join(methods) if methods else "none"
+    return best, method
+
+
+def low_text_fallback_chunk(pdf_filename: str, source_title: str, page_num: int, extracted_text: str) -> str:
+    """Create a minimal searchable chunk when OCR/text extraction is still thin."""
+    compact = compact_text(extracted_text)
+    fallback = (
+        f"{source_title}. Source PDF file: {pdf_filename}. Page {page_num}. "
+        "This appears to be a low-text or image-heavy PDF page. "
+    )
+    if compact:
+        fallback += compact
+    return compact_text(fallback)
+
 def ingest_one(filename: str) -> int:
     pdf_path = MAGAZINE_DIR / filename
     if not pdf_path.exists():
@@ -358,6 +458,7 @@ def ingest_one(filename: str) -> int:
     log(f"Processing {pdf_path.name} ({total_pages} pages)")
     log(f"Junk-page filtering: {'ON' if PDF_SKIP_JUNK else 'OFF'}")
     log(f"Chunk size: {PDF_CHUNK_SIZE}; overlap: {PDF_CHUNK_OVERLAP}; min chars: {PDF_MIN_CHUNK_CHARS}")
+    log(f"OCR fallback: {'ON' if PDF_ENABLE_OCR else 'OFF'}; threshold: {PDF_OCR_MIN_CHARS} chars; scale: {PDF_OCR_DPI_SCALE}")
 
     pending_texts: list[tuple[int, int, int, str]] = []
     pending_rows: list[dict] = []
@@ -405,19 +506,26 @@ def ingest_one(filename: str) -> int:
         return flush_rows(table, pending_rows)
 
     for page_num, page in enumerate(reader.pages, start=1):
-        try:
-            raw_page_text = clean_text(page.extract_text() or "")
-        except Exception as exc:
-            log(f"Skipping page {page_num}: {exc}")
-            continue
+        raw_page_text, extraction_method = extract_page_text(pdf_path, page, page_num)
+        log(f"  Page {page_num}/{total_pages}: extracted {len(raw_page_text)} chars via {extraction_method}")
 
-        if PDF_SKIP_JUNK and is_junk_page(raw_page_text):
+        # Do not junk-skip extremely short PDFs/flyers too aggressively. A one-page
+        # event flyer may be the whole document and should still be searchable.
+        if PDF_SKIP_JUNK and total_pages > 1 and is_junk_page(raw_page_text):
             pages_skipped += 1
             log(f"  Skipping likely junk/ad page {page_num}/{total_pages}")
             continue
 
         page_text = strip_boilerplate(raw_page_text)
         chunks = chunk_text(page_text)
+
+        # If extraction/OCR still produced a short fragment, keep a fallback chunk
+        # so names, dates, event titles, and file identity remain searchable.
+        if not chunks and compact_text(page_text):
+            chunks = [low_text_fallback_chunk(pdf_path.name, source_title, page_num, page_text)]
+        elif not chunks and total_pages <= 2:
+            chunks = [low_text_fallback_chunk(pdf_path.name, source_title, page_num, "")]
+
         log(f"  Page {page_num}/{total_pages}: {len(chunks)} chunks")
 
         chunk_count = len(chunks)
