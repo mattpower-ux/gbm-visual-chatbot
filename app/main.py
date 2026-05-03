@@ -372,6 +372,42 @@ def _thumb_for_url(url: str) -> str:
     return f"/assets/thumbs/{slug}.jpg"
 
 
+
+
+def _query_years(text: str) -> set[str]:
+    """Return years explicitly mentioned in the user's question."""
+    return set(re.findall(r"\b(20\d{2}|19\d{2})\b", text or ""))
+
+
+def _chunk_years(chunk: dict[str, Any]) -> set[str]:
+    """Return issue/content years known for a chunk."""
+    years: set[str] = set()
+    for key in ("pdf_year", "published_at", "pdf_filename", "source_name", "title", "url"):
+        value = chunk.get(key)
+        if value is not None:
+            years.update(re.findall(r"\b(20\d{2}|19\d{2})\b", str(value)))
+    return years
+
+
+def _magazine_cover_for_url(url: str, chunk: dict[str, Any] | None = None) -> str:
+    """Return the generated magazine cover path for a PDF URL/chunk."""
+    from urllib.parse import unquote
+
+    chunk = chunk or {}
+    explicit = chunk.get("cover_url") or chunk.get("thumbnail_url") or chunk.get("image") or chunk.get("thumbnail")
+    if explicit:
+        return str(explicit)
+
+    filename = str(chunk.get("pdf_filename") or "").strip()
+    if not filename and url:
+        filename = Path(unquote(str(url).split("/magazines/", 1)[-1])).name
+    if not filename:
+        return "/assets/covers/fallback-magazine.jpg"
+
+    encoded_name = filename.replace(" ", "%20")
+    stem = Path(encoded_name).stem
+    return f"/assets/covers/{stem}.jpg"
+
 def _find_chunk_for_source(source: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, Any]:
     url = str(source.get("url", ""))
     title = str(source.get("title", ""))
@@ -505,7 +541,7 @@ def _parse_datetime_for_ranking(value: Any) -> datetime | None:
         return None
 
 
-def _apply_smart_ranking(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_smart_ranking(chunks: list[dict[str, Any]], question: str = "") -> list[dict[str, Any]]:
     """Promote strategic, fresh, visual content before source caps are applied.
 
     This keeps the vector search as the starting point, then gently boosts:
@@ -514,11 +550,13 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     - pages that have real crawler images
     """
     ranked_chunks: list[dict[str, Any]] = []
+    requested_years = _query_years(question)
 
     for index, chunk in enumerate(chunks or []):
         ranked = dict(chunk)
         source_type = _detect_source_type(ranked)
         url = str(ranked.get("url", "") or "").lower()
+        chunk_years = _chunk_years(ranked)
 
         # Base score: lower is better because _result_rank_score normalizes
         # high-similarity scores into negative values and vector distances into positive values.
@@ -536,6 +574,15 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             multiplier *= 0.82
         elif source_type == "blog":
             multiplier *= 0.95
+
+        # Year-aware ranking for magazine questions such as "2020 coverage".
+        # This fixes the problem where one older PDF issue can dominate answers
+        # even when the user explicitly asks for another year.
+        if requested_years:
+            if chunk_years & requested_years:
+                multiplier *= 0.45
+            elif source_type == "magazine":
+                multiplier *= 2.8
 
         # Freshness boost.
         published = _parse_datetime_for_ranking(ranked.get("published_at"))
@@ -632,6 +679,9 @@ def _thumbnail_from_chunk_or_source(chunk: dict[str, Any], source: dict[str, Any
     Priority is intentionally crawler-first: use the real image fields saved by
     crawl_greenbuilder.py before falling back to generated local thumb paths.
     """
+    if _is_magazine_chunk(chunk) or _detect_source_type_from_url(url) == "magazine":
+        return _magazine_cover_for_url(url, chunk)
+
     image = (
         chunk.get("image")
         or chunk.get("og_image")
@@ -670,7 +720,7 @@ def _source_public_payload(source: Any, chunks: list[dict[str, Any]]) -> dict[st
     source_dict["thumbnail"] = image
     source_dict["thumbnail_url"] = image
 
-    for key in ("og_image", "featured_image", "category", "page", "pdf_filename", "source_name"):
+    for key in ("og_image", "featured_image", "category", "page", "pdf_filename", "source_name", "pdf_year", "pdf_issue", "cover_url"):
         if key not in source_dict and chunk.get(key) is not None:
             source_dict[key] = chunk.get(key)
 
@@ -744,14 +794,15 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
         chunk = _find_chunk_for_source(source, chunks)
         image = _thumbnail_from_chunk_or_source(chunk, source, url)
 
-        if url.startswith("/magazines/") or "/magazines/" in url or str(source.get("source_type", "")) == "pdf":
-            filename = _asset_safe_name(url)
-            stem = Path(filename).stem
+        if url.startswith("/magazines/") or "/magazines/" in url or str(source.get("source_type", "")) in {"pdf", "magazine"}:
+            cover = _magazine_cover_for_url(url, chunk)
             magazines.append(
                 {
                     "title": title,
                     "url": url,
-                    "cover": f"/assets/covers/{stem}.jpg",
+                    "cover": cover,
+                    "image": cover,
+                    "thumbnail_url": cover,
                     "issue": chunk.get("source_name") or source.get("attribution_label") or "Magazine archive",
                     "page": chunk.get("page"),
                     "type": "pdf",
@@ -760,7 +811,7 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
                 }
             )
         else:
-            source_type = _detect_source_type_from_url(url)
+            source_type = _detect_source_type(chunk) if chunk else _detect_source_type_from_url(url)
             cards.append(
                 {
                     "title": title,
@@ -852,7 +903,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     try:
         chunks = search(req.question)
-        chunks = _apply_smart_ranking(chunks)
+        chunks = _apply_smart_ranking(chunks, req.question)
         chunks = _apply_source_weights_and_limits(chunks)
     except Exception as exc:
         error_text = str(exc)
