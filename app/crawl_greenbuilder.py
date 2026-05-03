@@ -193,6 +193,37 @@ def allow_url(url: str) -> bool:
     return any(part in path_lower for part in allowed)
 
 
+
+
+def is_public_indexable_url(url: str) -> bool:
+    """Final safety gate for URLs saved into the public index.
+
+    This intentionally reuses allow_url() so HubSpot preview/draft/system URLs
+    are not reintroduced through canonical or og:url metadata.
+    """
+    if not url:
+        return False
+
+    lowered = url.lower()
+    draft_or_system_markers = [
+        "/_hcms/preview/",
+        "/_hcms/mem/",
+        "/_hcms/",
+        "hs_preview=",
+        "preview_key=",
+        "preview=true",
+        "hs_preview_key=",
+        "portalid=",
+        "contentid=",
+        "/hs/manage-preferences/",
+        "/hs/preferences-center/",
+    ]
+    if any(marker in lowered for marker in draft_or_system_markers):
+        return False
+
+    return allow_url(url)
+
+
 def detect_source_type_from_url(url: str) -> str:
     """Classify crawled public URLs for downstream weighting and source caps."""
     u = (url or "").lower()
@@ -428,62 +459,157 @@ def normalize_image_url(image_url: str, page_url: str) -> str:
 
 
 def extract_best_image(soup: BeautifulSoup, page_url: str) -> dict[str, str]:
-    """Extract the best available thumbnail image for a crawled page.
+    """Extract the best available public thumbnail image for a crawled page.
 
-    Preference order:
-    1. Open Graph image
-    2. Twitter card image
-    3. First content image in article/main/body
-    4. Local fallback thumbnail so the UI never receives an empty image field
+    HubSpot often lazy-loads images or stores them in srcset/picture/source tags.
+    This function prioritizes explicit social-card images, then scans content
+    images while filtering logos/icons/avatars/tracking pixels. It returns empty
+    strings when no real image URL is found; the UI layer should handle fallback
+    art. Avoiding a fake fallback here makes verification much easier.
     """
-    og_image = (
+
+    def clean(raw_url: str | None) -> str:
+        if not raw_url:
+            return ""
+        value = str(raw_url).strip().strip('"\'')
+        if not value:
+            return ""
+        if value.startswith("data:"):
+            return ""
+        if value.startswith("//"):
+            value = "https:" + value
+        return urljoin(page_url, value)
+
+    def from_srcset(srcset: str | None) -> str:
+        if not srcset:
+            return ""
+        # Prefer the first listed candidate; HubSpot commonly puts valid URLs here.
+        first = srcset.split(",")[0].strip()
+        if not first:
+            return ""
+        return first.split(" ")[0].strip()
+
+    def looks_like_bad_image(candidate: str) -> bool:
+        if not candidate:
+            return True
+        c = candidate.lower()
+        bad_markers = [
+            "logo",
+            "icon",
+            "avatar",
+            "gravatar",
+            "sprite",
+            "pixel",
+            "tracking",
+            "transparent",
+            "spacer",
+            "blank.gif",
+            "favicon",
+            "loader",
+        ]
+        return any(marker in c for marker in bad_markers)
+
+    def candidate_from_img(img) -> str:
+        if not img:
+            return ""
+        raw = (
+            img.get("src")
+            or img.get("data-src")
+            or img.get("data-lazy-src")
+            or img.get("data-original")
+            or img.get("data-ll-src")
+            or img.get("data-hs-cos-general-type")
+            or from_srcset(img.get("srcset"))
+            or from_srcset(img.get("data-srcset"))
+            or ""
+        )
+        return clean(raw)
+
+    def candidate_from_source(source) -> str:
+        if not source:
+            return ""
+        raw = (
+            source.get("srcset")
+            or source.get("data-srcset")
+            or source.get("src")
+            or source.get("data-src")
+            or ""
+        )
+        return clean(from_srcset(raw) or raw)
+
+    og_image = clean(
         meta_content(soup, property_name="og:image")
         or meta_content(soup, property_name="og:image:secure_url")
     )
-    twitter_image = (
+    twitter_image = clean(
         meta_content(soup, name="twitter:image")
         or meta_content(soup, property_name="twitter:image")
     )
 
-    featured_image = ""
-    article_or_main = soup.find("article") or soup.find("main") or soup.body
+    json_ld_image = ""
+    for item in extract_json_ld_values(str(soup)):
+        raw_image = item.get("image")
+        if isinstance(raw_image, str):
+            json_ld_image = clean(raw_image)
+        elif isinstance(raw_image, list) and raw_image:
+            first = raw_image[0]
+            if isinstance(first, str):
+                json_ld_image = clean(first)
+            elif isinstance(first, dict):
+                json_ld_image = clean(first.get("url") or first.get("contentUrl"))
+        elif isinstance(raw_image, dict):
+            json_ld_image = clean(raw_image.get("url") or raw_image.get("contentUrl"))
+        if json_ld_image and not looks_like_bad_image(json_ld_image):
+            break
 
-    if article_or_main:
-        img = article_or_main.find("img")
-        if img:
-            featured_image = (
-                img.get("src")
-                or img.get("data-src")
-                or img.get("data-lazy-src")
-                or img.get("data-original")
-                or (img.get("srcset", "").split(" ")[0] if img.get("srcset") else "")
-                or ""
-            )
+    def find_best_content_image(container) -> str:
+        if not container:
+            return ""
 
-    if not featured_image:
-        img = soup.find("img")
-        if img:
-            featured_image = (
-                img.get("src")
-                or img.get("data-src")
-                or img.get("data-lazy-src")
-                or img.get("data-original")
-                or (img.get("srcset", "").split(" ")[0] if img.get("srcset") else "")
-                or ""
-            )
+        for source in container.find_all("source"):
+            candidate = candidate_from_source(source)
+            if candidate and not looks_like_bad_image(candidate):
+                return candidate
 
-    og_image = normalize_image_url(og_image, page_url)
-    twitter_image = normalize_image_url(twitter_image, page_url)
-    featured_image = normalize_image_url(featured_image, page_url)
+        for img in container.find_all("img"):
+            candidate = candidate_from_img(img)
+            if candidate and not looks_like_bad_image(candidate):
+                return candidate
 
-    thumbnail = og_image or twitter_image or featured_image
-    best = thumbnail or "/assets/thumbs/fallback-article.jpg"
+        # Last-chance HubSpot/CMS pattern: image URLs embedded in inline styles.
+        for node in container.find_all(style=True):
+            style = node.get("style") or ""
+            match = re.search(r"url\((['\"]?)(.*?)\1\)", style)
+            if match:
+                candidate = clean(match.group(2))
+                if candidate and not looks_like_bad_image(candidate):
+                    return candidate
+
+        return ""
+
+    article = soup.find("article")
+    main = soup.find("main")
+    role_main = soup.find(attrs={"role": "main"})
+    body = soup.body
+
+    featured_image = (
+        find_best_content_image(article)
+        or find_best_content_image(main)
+        or find_best_content_image(role_main)
+        or find_best_content_image(body)
+    )
+
+    best = ""
+    for candidate in [og_image, twitter_image, json_ld_image, featured_image]:
+        if candidate and not looks_like_bad_image(candidate):
+            best = candidate
+            break
 
     return {
         "image": best,
-        "og_image": og_image,
-        "featured_image": featured_image,
-        "thumbnail": thumbnail or best,
+        "og_image": og_image if og_image and not looks_like_bad_image(og_image) else "",
+        "featured_image": featured_image if featured_image and not looks_like_bad_image(featured_image) else "",
+        "thumbnail": best,
     }
 
 
@@ -510,6 +636,13 @@ def extract_metadata(html: str, url: str) -> Doc | None:
         return None
     published_at = extract_published_at(html, soup)
     canonical_url = extract_canonical_url(soup, url)
+
+    # Do not let HubSpot preview/draft/system URLs back into the public index
+    # through canonical or og:url metadata. This preserves the earlier fix that
+    # stopped unpublished draft blog links from appearing in chatbot answers.
+    if not is_public_indexable_url(canonical_url):
+        return None
+
     category = None
     og_section = soup.find("meta", attrs={"property": "article:section"})
     if og_section and og_section.get("content"):
@@ -543,7 +676,7 @@ def load_existing_docs(docs_path: Path) -> Dict[str, Doc]:
             try:
                 raw = json.loads(line)
                 url = raw.get("url", "")
-                if not url:
+                if not url or not is_public_indexable_url(url):
                     continue
                 docs[url] = Doc(
                     url=url,
@@ -558,7 +691,7 @@ def load_existing_docs(docs_path: Path) -> Dict[str, Doc]:
                     visibility=raw.get("visibility", "public"),
                     attribution_label=raw.get("attribution_label", "Green Builder Media"),
                     surface_policy=raw.get("surface_policy", "public"),
-                    source_type=raw.get("source_type", "article"),
+                    source_type=detect_source_type_from_url(url),
                 )
             except Exception:
                 continue
@@ -569,7 +702,11 @@ def save_docs(docs_path: Path, docs_by_url: Dict[str, Doc]) -> None:
     docs_path.parent.mkdir(parents=True, exist_ok=True)
     with docs_path.open("w", encoding="utf-8") as f:
         for url in sorted(docs_by_url.keys()):
-            f.write(json.dumps(asdict(docs_by_url[url]), ensure_ascii=False) + "\n")
+            if not is_public_indexable_url(url):
+                continue
+            doc = docs_by_url[url]
+            doc.source_type = detect_source_type_from_url(doc.url)
+            f.write(json.dumps(asdict(doc), ensure_ascii=False) + "\n")
 
 
 async def main() -> None:
@@ -610,9 +747,10 @@ async def main() -> None:
                 html = await fetch_text(client, url)
                 doc = extract_metadata(html, url)
                 if doc:
-                    results_by_url[url] = doc
+                    # Store by canonical public URL so preview/redirect variants do not linger.
+                    results_by_url[doc.url] = doc
                     kept_count += 1
-                    if doc.image:
+                    if doc.image and str(doc.image).startswith("http"):
                         image_count += 1
                     print(f"[{idx}/{len(entries_to_crawl)}] kept {url}" + (" [image]" if doc.image else ""))
                     if looks_like_debug_target(url):
