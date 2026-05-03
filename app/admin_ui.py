@@ -177,25 +177,66 @@ function articleSlugFromUrl(url) {
   }
 }
 
+function detectSourceType(src) {
+  const explicit = (src.source_type || src.type || '').toString().toLowerCase();
+  if (explicit === 'blog' || explicit === 'webpage' || explicit === 'magazine' || explicit === 'pdf') {
+    return explicit === 'pdf' ? 'magazine' : explicit;
+  }
+
+  const url = (src.url || '').toString().toLowerCase();
+  if (url.includes('/magazines/') || url.endsWith('.pdf') || url.includes('.pdf')) return 'magazine';
+  if (url.includes('/blog/')) return 'blog';
+  if (
+    url.includes('/lp/') ||
+    url.includes('/landing-pages/') ||
+    url.includes('/resources/') ||
+    url.includes('/ebooks/') ||
+    url.includes('/webinars/') ||
+    url.includes('/offers/') ||
+    url.includes('/events/') ||
+    url.includes('/vision-house/') ||
+    url.includes('/todays-homeowner/')
+  ) return 'webpage';
+  return 'webpage';
+}
+
+function sourceImageFromSource(src) {
+  return (
+    src.image ||
+    src.thumbnail_url ||
+    src.thumbnail ||
+    src.og_image ||
+    src.featured_image ||
+    ''
+  );
+}
+
 function sourceCardHtml(src) {
   const title = src.title || 'Source';
   const url = src.url || '';
+  const image = sourceImageFromSource(src);
+  const sourceType = detectSourceType(src);
+
   if (!url) {
     return `<span class="pill">${escapeHtml(title)}</span>`;
   }
 
   const slug = articleSlugFromUrl(url);
   const overrideThumb = `/assets/thumbs/overrides/${slug}.jpg`;
-  const normalThumb = `/assets/thumbs/${slug}.jpg`;
   const fallbackThumb = `/assets/thumbs/fallback-article.jpg`;
+  const escapedImage = escapeHtml(image);
 
   return `
     <div class="source-card">
-      <img class="source-thumb" src="${escapeHtml(overrideThumb)}?v=${Date.now()}"
-        onerror="this.onerror=function(){this.onerror=null;this.src='${fallbackThumb}';};this.src='${normalThumb}';"
+      <img class="source-thumb"
+        src="${escapeHtml(overrideThumb)}?v=${Date.now()}"
+        onerror="this.onerror=null;const real='${escapedImage}';this.src=(real && real.startsWith('http')) ? real : '${fallbackThumb}';"
         alt="Source thumbnail" />
       <div>
-        <div class="source-title">${escapeHtml(title)}</div>
+        <div class="source-title">
+          ${escapeHtml(title)}
+          <div style="margin-top:4px"><span class="pill">${escapeHtml(sourceType)}</span></div>
+        </div>
         <div class="source-url">${escapeHtml(url)}</div>
         <div class="source-actions">
           <button type="button" class="small-btn replaceThumbBtn" data-thumb-url="${encodeURIComponent(url)}" data-thumb-title="${encodeURIComponent(title)}">Replace thumbnail</button>
