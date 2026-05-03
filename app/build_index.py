@@ -105,6 +105,12 @@ def normalize_doc(doc: Dict) -> Dict:
         "title": doc.get("title", "Untitled"),
         "published_at": doc.get("published_at"),
         "category": doc.get("category"),
+        "source_type": doc.get("source_type", "webpage"),
+        "image": doc.get("image"),
+        "thumbnail": doc.get("thumbnail"),
+        "og_image": doc.get("og_image"),
+        "featured_image": doc.get("featured_image"),
+        "thumbnail_url": doc.get("thumbnail_url") or doc.get("thumbnail"),
         "text": doc.get("text", ""),
         "visibility": visibility,
         "attribution_label": attribution_label,
@@ -203,6 +209,12 @@ def main() -> None:
                     "title": doc["title"],
                     "published_at": doc.get("published_at"),
                     "category": doc.get("category"),
+                    "source_type": doc.get("source_type"),
+                    "image": doc.get("image"),
+                    "thumbnail": doc.get("thumbnail"),
+                    "og_image": doc.get("og_image"),
+                    "featured_image": doc.get("featured_image"),
+                    "thumbnail_url": doc.get("thumbnail_url"),
                     "text": chunk,
                     "embed_text": embed_text,
                     "chunk_index": idx,
@@ -258,6 +270,12 @@ def main() -> None:
             pa.field("title", pa.string()),
             pa.field("published_at", pa.string()),
             pa.field("category", pa.string()),
+            pa.field("source_type", pa.string()),
+            pa.field("image", pa.string()),
+            pa.field("thumbnail", pa.string()),
+            pa.field("og_image", pa.string()),
+            pa.field("featured_image", pa.string()),
+            pa.field("thumbnail_url", pa.string()),
             pa.field("text", pa.string()),
             pa.field("embed_text", pa.string()),
             pa.field("chunk_index", pa.int32()),
@@ -283,6 +301,7 @@ def main() -> None:
     table.create_scalar_index("surface_policy")
     table.create_scalar_index("title")
     table.create_scalar_index("category")
+    table.create_scalar_index("source_type")
 
     print(f"Built LanceDB table '{TABLE_NAME}' with {len(rows)} rows")
 
