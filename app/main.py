@@ -8,21 +8,16 @@ import secrets
 import subprocess
 import time
 import zipfile
-from datetime import date, datetime, timedelta
-from io import BytesIO
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, List
-from urllib.parse import urlparse, unquote
-from zoneinfo import ZoneInfo
 
 import gspread
-from PIL import Image
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status, UploadFile, File
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from google.oauth2.service_account import Credentials
-from openai import OpenAI
 
 from app.admin_ui import HTML as ADMIN_HTML
 from app.config import get_settings
@@ -46,9 +41,6 @@ from app.retrieval import search
 
 settings = get_settings()
 
-INSIGHTS_MODEL = os.getenv("INSIGHTS_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
-INSIGHTS_CLIENT = OpenAI()
-
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
 
@@ -61,14 +53,9 @@ app.add_middleware(
 )
 
 TODAY = date.today()
-# Background crawl scheduling
-# Enable with ENABLE_BACKGROUND_CRAWL=true. By default, the crawl/index rebuild
-# runs every 3 days at 3:00 a.m. Eastern time.
+DAILY_CRAWL_INTERVAL_SECONDS = 60 * 60 * 24
 STARTUP_CRAWL_DELAY_SECONDS = 30
-SITEMAP_REFRESH_INTERVAL_DAYS = int(os.getenv("SITEMAP_REFRESH_INTERVAL_DAYS", "3"))
-SITEMAP_REFRESH_HOUR_ET = int(os.getenv("SITEMAP_REFRESH_HOUR_ET", "3"))
-EASTERN = ZoneInfo("America/New_York")
-ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "false").strip().lower() in {
+ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "true").strip().lower() in {
     "1", "true", "yes", "on",
 }
 
@@ -192,46 +179,14 @@ async def run_crawl_and_reindex_once() -> None:
         print("Scheduled crawl + index rebuild completed.")
 
 
-def seconds_until_next_scheduled_crawl() -> float:
-    """Return seconds until the next scheduled crawl in America/New_York time."""
-    now = datetime.now(EASTERN)
-
-    next_run = now.replace(
-        hour=SITEMAP_REFRESH_HOUR_ET,
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
-
-    if now >= next_run:
-        next_run += timedelta(days=max(1, SITEMAP_REFRESH_INTERVAL_DAYS))
-
-    return max(60.0, (next_run - now).total_seconds())
-
-
-async def run_scheduled_crawl_loop() -> None:
-    """Run crawl + index rebuild every N days at a fixed Eastern-time hour."""
+async def run_daily_crawl_loop() -> None:
     await asyncio.sleep(STARTUP_CRAWL_DELAY_SECONDS)
-
     while True:
         try:
-            wait_seconds = seconds_until_next_scheduled_crawl()
-            next_run = datetime.now(EASTERN) + timedelta(seconds=wait_seconds)
-            print(
-                "Next scheduled crawl + index rebuild: "
-                f"{next_run.strftime('%Y-%m-%d %I:%M %p %Z')} "
-                f"(in {round(wait_seconds / 3600, 2)} hours)"
-            )
-            await asyncio.sleep(wait_seconds)
-
-            print("Running scheduled crawl + index rebuild now.")
             await run_crawl_and_reindex_once()
-
         except Exception as exc:
             print(f"Scheduled crawl + index rebuild failed: {exc}")
-
-        # Small buffer prevents an immediate double-run after the scheduled time.
-        await asyncio.sleep(60)
+        await asyncio.sleep(DAILY_CRAWL_INTERVAL_SECONDS)
 
 
 async def run_rebuild_once() -> None:
@@ -241,9 +196,8 @@ async def run_rebuild_once() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    load_public_citable_blog_slugs()
     if ENABLE_BACKGROUND_CRAWL:
-        asyncio.create_task(run_scheduled_crawl_loop())
+        asyncio.create_task(run_daily_crawl_loop())
     else:
         print("Background crawl loop disabled by ENABLE_BACKGROUND_CRAWL.")
 
@@ -408,327 +362,14 @@ def _asset_safe_name(value: str) -> str:
     return value or "source"
 
 
-def _safe_cover_stem_from_pdf_name(value: str) -> str:
-    """Return the cover-image stem used for magazine PDF cover files.
-
-    Handles both plain PDF names and URL-encoded magazine URLs, so:
-    /magazines/001%20Green%20Builder%20Jan-Feb%202026.pdf
-    maps to:
-    /assets/covers/001-Green-Builder-Jan-Feb-2026.jpg
-    """
-    decoded = unquote(str(value or ""))
-    filename = Path(decoded).name or "magazine"
-    stem = Path(filename).stem
-    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-")
-    return safe_stem or "magazine"
-
-
-def _cover_disk_path_for_pdf(value: str) -> Path:
-    return Path("/data/assets/covers") / f"{_safe_cover_stem_from_pdf_name(value)}.jpg"
-
-
-def _cover_for_magazine_url(url: str) -> str:
-    """Return the best public cover URL for a magazine PDF.
-
-    This is robust to URL-encoded PDF links created by the newer PDF ingest
-    path and to the hyphenated cover filenames already on disk.
-    """
-    cover_path = _cover_disk_path_for_pdf(url)
-    if cover_path.exists() and cover_path.stat().st_size > 1000:
-        return f"/assets/covers/{cover_path.name}"
-
-    # Support a couple of legacy naming variants if any older covers exist.
-    decoded = unquote(str(url or ""))
-    legacy_candidates = [
-        Path("/data/assets/covers") / f"{Path(Path(decoded).name).stem}.jpg",
-        Path("/data/assets/covers") / f"{_asset_safe_name(decoded).removesuffix('.pdf')}.jpg",
-    ]
-    for candidate in legacy_candidates:
-        try:
-            if candidate.exists() and candidate.stat().st_size > 1000:
-                return f"/assets/covers/{candidate.name}"
-        except Exception:
-            pass
-
-    # Return the deterministic future path. If a cover generator later creates
-    # the file, the same URL will begin resolving without changing the index.
-    return f"/assets/covers/{cover_path.name}"
-
-
-def ensure_magazine_cover_for_pdf(pdf_path: Path) -> None:
-    """Create a first-page JPG cover for an ingested PDF when possible.
-
-    Existing covers are left untouched. If PyMuPDF is unavailable or rendering
-    fails, create a small issue-specific placeholder so the UI never falls back
-    to a broken image for future admin-uploaded PDFs.
-    """
-    try:
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists() or not pdf_path.name.lower().endswith(".pdf"):
-            return
-
-        cover_path = _cover_disk_path_for_pdf(pdf_path.name)
-        cover_path.parent.mkdir(parents=True, exist_ok=True)
-        if cover_path.exists() and cover_path.stat().st_size > 1000:
-            return
-
-        try:
-            import fitz  # PyMuPDF, optional
-
-            doc = fitz.open(str(pdf_path))
-            if len(doc) == 0:
-                raise RuntimeError("PDF has no pages")
-            page = doc.load_page(0)
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            img.thumbnail((640, 900))
-            img.save(cover_path, "JPEG", quality=88, optimize=True)
-            doc.close()
-            print(f"Generated magazine cover: {cover_path}")
-            return
-        except Exception as render_exc:
-            print(f"PDF cover render unavailable for {pdf_path.name}; creating placeholder: {render_exc}")
-
-        # Fallback placeholder: better than a broken/missing image and unique
-        # to the PDF title. Real cover generation can replace it later.
-        img = Image.new("RGB", (420, 560), (0, 122, 102))
-        from PIL import ImageDraw
-
-        draw = ImageDraw.Draw(img)
-        title = Path(pdf_path.name).stem.replace("-", " ").replace("_", " ")
-        words = title.split()
-        lines: list[str] = []
-        line = ""
-        for word in words:
-            trial = f"{line} {word}".strip()
-            if len(trial) > 22 and line:
-                lines.append(line)
-                line = word
-            else:
-                line = trial
-        if line:
-            lines.append(line)
-
-        draw.rectangle((18, 18, 402, 542), outline=(230, 245, 240), width=4)
-        draw.text((42, 70), "GREEN BUILDER", fill=(255, 255, 255))
-        y = 170
-        for line in lines[:8]:
-            draw.text((42, y), line, fill=(255, 255, 255))
-            y += 34
-        draw.text((42, 500), "Magazine Archive", fill=(230, 245, 240))
-        img.save(cover_path, "JPEG", quality=88, optimize=True)
-        print(f"Generated placeholder magazine cover: {cover_path}")
-
-    except Exception as exc:
-        print(f"Failed to ensure magazine cover for {pdf_path}: {exc}")
-
-# === Public blog citation allowlist ===
-# This file is generated from the live Green Builder sitemap and contains only
-# blog slugs that should be shown as public citations/cards. It does not affect
-# retrieval: archived/private HTML can still be used as answer context.
-PUBLIC_CITABLE_BLOG_SLUGS: set[str] = set()
-PUBLIC_CITABLE_BLOG_SLUGS_LOADED = False
-PUBLIC_CITABLE_BLOG_SLUGS_PATH = Path("/data/public_citable_blog_slugs.txt")
-
-
-def _slug_from_url(url: str) -> str:
-    path = urlparse(str(url or "")).path.strip("/")
-    return Path(path).name.strip()
-
-
-def _is_blog_url(url: str) -> bool:
-    url = str(url or "").strip().lower()
-    return (
-        url.startswith("https://www.greenbuildermedia.com/blog/")
-        or url.startswith("https://greenbuildermedia.com/blog/")
-    )
-
-
-def load_public_citable_blog_slugs() -> None:
-    """Load the sitemap-derived allowlist of blog slugs safe to cite."""
-    global PUBLIC_CITABLE_BLOG_SLUGS, PUBLIC_CITABLE_BLOG_SLUGS_LOADED
-
-    if PUBLIC_CITABLE_BLOG_SLUGS_LOADED:
-        return
-
-    PUBLIC_CITABLE_BLOG_SLUGS_LOADED = True
-
-    if not PUBLIC_CITABLE_BLOG_SLUGS_PATH.exists():
-        print(f"Public citable blog slug allowlist not found: {PUBLIC_CITABLE_BLOG_SLUGS_PATH}")
-        return
-
-    try:
-        PUBLIC_CITABLE_BLOG_SLUGS = {
-            line.strip()
-            for line in PUBLIC_CITABLE_BLOG_SLUGS_PATH.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        }
-        print(f"Loaded {len(PUBLIC_CITABLE_BLOG_SLUGS)} public citable blog slugs")
-    except Exception as exc:
-        PUBLIC_CITABLE_BLOG_SLUGS = set()
-        print(f"Failed to load public citable blog slug allowlist: {exc}")
-
-
-def _is_public_citable_blog_url(url: str) -> bool:
-    """Return True when a blog URL is present in the sitemap-derived allowlist."""
-    if not _is_blog_url(url):
-        return True
-
-    load_public_citable_blog_slugs()
-
-    # Fail open only if the allowlist is missing/empty, so a deployment cannot
-    # accidentally suppress all blog citations. When the file exists and loads,
-    # require the slug to be present.
-    if not PUBLIC_CITABLE_BLOG_SLUGS:
-        return True
-
-    return _slug_from_url(url) in PUBLIC_CITABLE_BLOG_SLUGS
-
-
-
-def _is_private_archive_chunk(chunk: dict[str, Any]) -> bool:
-    """Block only explicit draft/preview/private sources from citation.
-
-    Public Green Builder blog URLs should be citable even if the HTML copy
-    came from /data/draft_html, because that folder currently contains the
-    full blog archive, not only true drafts.
-    """
-    url = str(chunk.get("url", "") or "").strip().lower()
-    visibility = str(chunk.get("visibility", "") or "").strip().lower()
-    surface_policy = str(chunk.get("surface_policy", "") or "").strip().lower()
-
-    # Always block HubSpot preview/draft URLs.
-    if any(
-        bad in url
-        for bad in ["preview", "draft", "hs_preview", "hs_preview_key", "_hcms/preview"]
-    ):
-        return True
-
-    # Normal public Green Builder blog URLs are allowed as citations/cards.
-    # Do this before honoring older visibility flags, because some public blog
-    # records may have been indexed from the local HTML archive folder.
-    if (
-        url.startswith("https://www.greenbuildermedia.com/blog/")
-        or url.startswith("https://greenbuildermedia.com/blog/")
-    ):
-        return False
-
-    # For non-public/private sources, honor explicit privacy flags.
-    if visibility in {"private", "internal", "draft", "hidden", "false", "0"}:
-        return True
-
-    if surface_policy in {"hide_source", "no_source", "do_not_cite"}:
-        return True
-
-    return False
-
-
-def _is_public_source_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface cite-safe public GBM URLs and magazine PDFs.
-
-    This permits normal public Green Builder blog URLs while still blocking
-    explicit HubSpot preview/draft URLs and non-public/private sources.
-    """
-    url = str(chunk.get("url", "") or "").strip()
-
-    if _is_private_archive_chunk(chunk):
-        print("Skipping private/draft archive chunk as source:", url)
-        return False
-
-    if _is_blog_url(url) and not _is_public_citable_blog_url(url):
-        print("Skipping blog URL not present in live sitemap allowlist:", url)
-        return False
-
-    if (
-        url.startswith("https://www.greenbuildermedia.com/")
-        or url.startswith("https://greenbuildermedia.com/")
-        or url.startswith("/magazines/")
-        or "/magazines/" in url
-    ):
-        return True
-
-    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
-    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
-
-
 def _thumb_for_url(url: str) -> str:
     """Return the local generated thumbnail path for a public blog/article URL."""
+    from urllib.parse import urlparse
+
     path = urlparse(str(url or "")).path.strip("/")
     slug = Path(path).name or "article"
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
     return f"/assets/thumbs/{slug}.jpg"
-
-
-def _override_thumb_for_url(url: str) -> str:
-    """Return the editor override thumbnail path for a public blog/article URL.
-
-    Editor-uploaded thumbnails are stored on the Render disk at:
-    /data/assets/thumbs/overrides/<article-slug>.jpg
-
-    The public URL returned here is served by the existing /assets mount.
-    """
-    path = urlparse(str(url or "")).path.strip("/")
-    slug = Path(path).name or "article"
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
-    return f"/assets/thumbs/overrides/{slug}.jpg"
-
-
-def _generated_thumb_for_url(url: str) -> str:
-    """Return the local generated-thumbnail path for a public blog/article URL.
-
-    Generated thumbnails should be stored on the Render disk at:
-    /data/assets/thumbs/generated/<article-slug>.jpg
-
-    The public URL returned here is served by the existing /assets mount.
-    """
-    path = urlparse(str(url or "")).path.strip("/")
-    slug = Path(path).name or "article"
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
-    return f"/assets/thumbs/generated/{slug}.jpg"
-
-
-def _asset_exists(asset_path: str) -> bool:
-    """Return True when an /assets/... file exists on the Render persistent disk."""
-    if not asset_path.startswith("/assets/"):
-        return False
-    disk_path = Path("/data") / asset_path.lstrip("/")
-    try:
-        return disk_path.exists() and disk_path.stat().st_size > 1000
-    except Exception:
-        return False
-
-
-def _topic_fallback_for_chunk(chunk: dict[str, Any]) -> str:
-    """Choose a better topic fallback image when a real article thumbnail is unavailable."""
-    haystack = " ".join([
-        str(chunk.get("title", "")),
-        str(chunk.get("text", "")),
-        str(chunk.get("category", "")),
-        str(chunk.get("url", "")),
-    ]).lower()
-
-    if any(w in haystack for w in ["insulation", "foam", "r-value", "r value", "thermal", "air seal"]):
-        return "/assets/thumbs/fallback-insulation.jpg"
-    if any(w in haystack for w in ["solar", "battery", "storage", "photovoltaic", "pv", "inverter"]):
-        return "/assets/thumbs/fallback-solar.jpg"
-    if any(w in haystack for w in ["hurricane", "resilience", "resilient", "flood", "storm", "wildfire", "disaster"]):
-        return "/assets/thumbs/fallback-resilience.jpg"
-    if any(w in haystack for w in ["water", "drought", "plumbing", "irrigation", "rainwater", "greywater"]):
-        return "/assets/thumbs/fallback-water.jpg"
-    if any(w in haystack for w in ["hvac", "heat pump", "cooling", "heating", "thermostat", "air conditioner"]):
-        return "/assets/thumbs/fallback-hvac.jpg"
-
-    return "/assets/thumbs/fallback-article.jpg"
-
-
-def _remote_image_from_chunk(chunk: dict[str, Any]) -> str:
-    """Return the best original image URL captured at crawl time."""
-    return (
-        str(chunk.get("image") or "").strip()
-        or str(chunk.get("og_image") or "").strip()
-        or str(chunk.get("featured_image") or "").strip()
-        or str(chunk.get("thumbnail") or "").strip()
-    )
 
 
 def _find_chunk_for_source(source: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -762,129 +403,254 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
     )
 
 
-PDF_RELEVANCE_STOPWORDS = {
-    "about", "after", "again", "against", "also", "and", "any", "are", "article",
-    "best", "better", "bot", "builder", "building", "can", "does", "for", "from",
-    "gbm", "give", "green", "guide", "have", "home", "homes", "house", "how",
-    "into", "magazine", "more", "most", "new", "page", "pdf", "should", "show",
-    "sustainable", "sustainability", "system", "systems", "tell", "that", "the",
-    "their", "there", "this", "use", "uses", "what", "when", "where", "which",
-    "with", "would", "your",
-}
+def _is_public_chunk(chunk: dict[str, Any]) -> bool:
+    """Surface public GBM URLs and magazine PDFs; keep true private drafts hidden."""
+    url = str(chunk.get("url", "") or "").strip()
 
-PDF_TOPIC_EXPANSIONS = {
-    "wall": {"wall", "walls", "assembly", "assemblies", "enclosure", "enclosures", "sheathing", "cladding", "rainscreen", "framing", "stud", "studs", "wrb", "housewrap", "siding", "exterior", "insulation", "sip", "sips", "icf", "icfs"},
-    "insulation": {"insulation", "insulate", "insulated", "r-value", "r value", "thermal", "foam", "cellulose", "fiberglass", "mineral", "wool", "continuous"},
-    "window": {"window", "windows", "glazing", "glass", "u-value", "u value", "shgc", "pane", "film", "frame", "fenestration"},
-    "solar": {"solar", "pv", "photovoltaic", "panel", "panels", "inverter", "battery", "storage", "net metering"},
-    "hvac": {"hvac", "heat", "pump", "cooling", "heating", "furnace", "air conditioner", "seer", "duct", "ducts"},
-    "water": {"water", "plumbing", "irrigation", "rainwater", "greywater", "graywater", "drought", "fixture", "fixtures"},
-    "flood": {"flood", "flooding", "resilience", "resilient", "hurricane", "storm", "wind", "disaster", "elevation"},
-}
-
-
-def _normalize_terms(text: str) -> set[str]:
-    """Extract meaningful lowercase terms for lightweight relevance checks."""
-    raw_terms = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", (text or "").lower())
-    terms: set[str] = set()
-    for term in raw_terms:
-        term = term.strip("-_")
-        if not term or term in PDF_RELEVANCE_STOPWORDS:
-            continue
-        terms.add(term)
-        # Simple singularization helps match wall/walls, systems/system, assemblies/assembly.
-        if len(term) > 4 and term.endswith("ies"):
-            terms.add(term[:-3] + "y")
-        elif len(term) > 4 and term.endswith("s"):
-            terms.add(term[:-1])
-    return terms
-
-
-def _expanded_query_terms(question: str) -> set[str]:
-    terms = _normalize_terms(question)
-    expanded = set(terms)
-    for term in list(terms):
-        singular = term[:-1] if term.endswith("s") else term
-        if term in PDF_TOPIC_EXPANSIONS:
-            expanded.update(PDF_TOPIC_EXPANSIONS[term])
-        if singular in PDF_TOPIC_EXPANSIONS:
-            expanded.update(PDF_TOPIC_EXPANSIONS[singular])
-    return {t.lower() for t in expanded if t}
-
-
-def _pdf_relevance_score(chunk: dict[str, Any], question: str) -> float:
-    """Return a conservative lexical relevance score for a PDF page/chunk.
-
-    Semantic vector search can retrieve broadly related magazine pages. Before
-    showing a PDF as a citation/card, require the cited page text itself to share
-    meaningful terms with the user's question. This prevents arbitrary magazine
-    pages from appearing just because a PDF fallback search found a weak match.
-    """
-    query_terms = _expanded_query_terms(question)
-    if not query_terms:
-        return 0.0
-
-    haystack = " ".join([
-        str(chunk.get("title", "")),
-        str(chunk.get("source_name", "")),
-        str(chunk.get("pdf_filename", "")),
-        str(chunk.get("text", "")),
-    ]).lower()
-
-    text_terms = _normalize_terms(haystack)
-    if not text_terms:
-        return 0.0
-
-    # Phrase matches get extra credit because they are strong evidence.
-    phrase_hits = 0
-    for phrase in sorted(query_terms, key=len, reverse=True):
-        if " " in phrase and phrase in haystack:
-            phrase_hits += 2
-
-    overlap = query_terms & text_terms
-    overlap_count = len(overlap) + phrase_hits
-    base = overlap_count / max(1, min(len(query_terms), 10))
-
-    try:
-        vector_score = float(chunk.get("score", 0.0) or 0.0)
-    except Exception:
-        vector_score = 0.0
-
-    # Keep vector score as a small tiebreaker only; lexical support is required.
-    return base + min(max(vector_score, 0.0), 1.0) * 0.05
-
-
-def _pdf_chunk_relevant_to_question(chunk: dict[str, Any], question: str) -> bool:
-    if not _is_magazine_chunk(chunk):
+    if (
+        url.startswith("https://www.greenbuildermedia.com/")
+        or url.startswith("https://greenbuildermedia.com/")
+        or url.startswith("/magazines/")
+        or "/magazines/" in url
+    ):
         return True
 
-    query_terms = _expanded_query_terms(question)
-    if not query_terms:
-        return False
-
-    haystack = " ".join([
-        str(chunk.get("title", "")),
-        str(chunk.get("source_name", "")),
-        str(chunk.get("pdf_filename", "")),
-        str(chunk.get("text", "")),
-    ]).lower()
-    text_terms = _normalize_terms(haystack)
-    overlap = query_terms & text_terms
-
-    # Require at least one strong topic match for short queries and at least two
-    # meaningful matches when possible. This blocks weak pages with only generic
-    # words like "green" or "building".
-    if len(query_terms) <= 3:
-        return len(overlap) >= 1 and _pdf_relevance_score(chunk, question) >= 0.25
-    return len(overlap) >= 2 and _pdf_relevance_score(chunk, question) >= 0.20
+    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
+    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
 
 
-def _sort_pdf_chunks_by_relevance(chunks: list[dict[str, Any]], question: str) -> list[dict[str, Any]]:
-    relevant = [chunk for chunk in chunks if _is_magazine_chunk(chunk) and _pdf_chunk_relevant_to_question(chunk, question)]
-    return sorted(relevant, key=lambda c: _pdf_relevance_score(c, question), reverse=True)
 
 
-def _magazine_source_from_chunk(chunk: dict[str, Any], question: str = "") -> SourceItem | None:
+def _detect_source_type_from_url(url: str) -> str:
+    """Classify public content for source caps and card labeling."""
+    u = str(url or "").strip().lower()
+
+    if not u:
+        return "webpage"
+
+    if "/magazines/" in u or u.endswith(".pdf") or ".pdf" in u:
+        return "magazine"
+
+    if "/blog/" in u:
+        return "blog"
+
+    if any(pattern in u for pattern in [
+        "/lp/",
+        "/landing-pages/",
+        "/landing-page/",
+        "/resources/",
+        "/resource/",
+        "/ebooks/",
+        "/ebook/",
+        "/webinars/",
+        "/webinar/",
+        "/offers/",
+        "/offer/",
+        "/events/",
+        "/event/",
+    ]):
+        return "webpage"
+
+    return "webpage"
+
+
+def _detect_source_type(chunk: dict[str, Any]) -> str:
+    """Prefer stored source_type, but safely infer it when older chunks lack metadata."""
+    explicit = str(chunk.get("source_type", "") or "").strip().lower()
+    if explicit in {"blog", "webpage", "landing_page", "landing-page", "magazine", "pdf"}:
+        if explicit in {"landing_page", "landing-page"}:
+            return "webpage"
+        if explicit == "pdf":
+            return "magazine"
+        return explicit
+
+    return _detect_source_type_from_url(str(chunk.get("url", "") or ""))
+
+
+def _result_rank_score(chunk: dict[str, Any]) -> float:
+    """Normalize likely score fields so lower-distance and higher-score results sort sensibly."""
+    for key in ("score", "similarity", "relevance"):
+        value = chunk.get(key)
+        if isinstance(value, (int, float)):
+            # Higher is better for these conventional score fields, so invert for ascending sort.
+            return -float(value)
+
+    for key in ("_distance", "distance"):
+        value = chunk.get(key)
+        if isinstance(value, (int, float)):
+            # Lower is better for vector distances.
+            return float(value)
+
+    return 0.0
+
+
+def _parse_datetime_for_ranking(value: Any) -> datetime | None:
+    """Parse common date strings for freshness ranking without failing chat."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # Make aware datetimes naive UTC-ish for safe subtraction from datetime.utcnow().
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        pass
+    try:
+        return datetime.strptime(raw[:10], "%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _apply_smart_ranking(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Promote strategic, fresh, visual content before source caps are applied.
+
+    This keeps the vector search as the starting point, then gently boosts:
+    - HubSpot / landing / resource / webinar / offer pages
+    - recent content
+    - pages that have real crawler images
+    """
+    ranked_chunks: list[dict[str, Any]] = []
+
+    for index, chunk in enumerate(chunks or []):
+        ranked = dict(chunk)
+        source_type = _detect_source_type(ranked)
+        url = str(ranked.get("url", "") or "").lower()
+
+        # Base score: lower is better because _result_rank_score normalizes
+        # high-similarity scores into negative values and vector distances into positive values.
+        rank_score = _result_rank_score(ranked)
+
+        # Multipliers below reduce rank_score for boosted items, moving them upward in ascending sort.
+        multiplier = 1.0
+
+        # Strategic source boosts: let landing/resource/webinar/offer pages compete with blogs.
+        if any(pattern in url for pattern in [
+            "/lp/", "/landing", "/resources/", "/resource/", "/ebooks/", "/ebook/",
+            "/webinars/", "/webinar/", "/offers/", "/offer/", "/events/", "/event/",
+            "/guides/", "/reports/",
+        ]):
+            multiplier *= 0.82
+        elif source_type == "blog":
+            multiplier *= 0.95
+
+        # Freshness boost.
+        published = _parse_datetime_for_ranking(ranked.get("published_at"))
+        if published:
+            age_days = max((datetime.utcnow() - published).days, 0)
+            if age_days <= 30:
+                multiplier *= 0.84
+            elif age_days <= 90:
+                multiplier *= 0.92
+            elif age_days <= 365:
+                multiplier *= 0.97
+
+        # Visual-content boost for better card results.
+        if (
+            ranked.get("image")
+            or ranked.get("og_image")
+            or ranked.get("featured_image")
+            or ranked.get("thumbnail")
+            or ranked.get("thumbnail_url")
+        ):
+            multiplier *= 0.92
+
+        ranked["_smart_rank"] = rank_score * multiplier
+        ranked["_smart_rank_original"] = index
+        ranked_chunks.append(ranked)
+
+    return sorted(
+        ranked_chunks,
+        key=lambda c: (c.get("_smart_rank", 0.0), c.get("_smart_rank_original", 0)),
+    )
+
+
+def _apply_source_weights_and_limits(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Weight and cap retrieval results before answer generation and source display.
+
+    Caps:
+    - max 3 blog URLs
+    - max 3 webpage / landing-page URLs
+    - max 3 magazine/PDF URLs retained for answer context
+
+    This function deduplicates by URL, preserves public/private safety checks elsewhere,
+    and does not require rebuilding old chunks because source_type can be inferred from URL.
+    """
+    source_weights = {
+        "blog": 1.00,
+        "webpage": 1.10,
+        "magazine": 0.95,
+    }
+    source_caps = {
+        "blog": 3,
+        "webpage": 3,
+        "magazine": 3,
+    }
+
+    enriched: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks or []):
+        source_type = _detect_source_type(chunk)
+        weight = source_weights.get(source_type, 1.0)
+        ranked = dict(chunk)
+        ranked["_detected_source_type"] = source_type
+        base_rank = float(chunk.get("_smart_rank", _result_rank_score(chunk)))
+        ranked["_weighted_rank"] = base_rank / weight
+        ranked["_original_rank"] = index
+        enriched.append(ranked)
+
+    enriched.sort(key=lambda c: (c.get("_weighted_rank", 0.0), c.get("_original_rank", 0)))
+
+    limited: list[dict[str, Any]] = []
+    counts = {"blog": 0, "webpage": 0, "magazine": 0}
+    seen_urls: set[str] = set()
+
+    for chunk in enriched:
+        url = str(chunk.get("url", "") or "").strip()
+        source_type = str(chunk.get("_detected_source_type") or _detect_source_type(chunk))
+        dedupe_key = url or f"chunk-{chunk.get('_original_rank', len(limited))}"
+
+        if dedupe_key in seen_urls:
+            continue
+
+        cap = source_caps.get(source_type, 3)
+        if counts.get(source_type, 0) >= cap:
+            continue
+
+        limited.append(chunk)
+        seen_urls.add(dedupe_key)
+        counts[source_type] = counts.get(source_type, 0) + 1
+
+    return limited
+
+
+def _thumbnail_from_chunk_or_source(chunk: dict[str, Any], source: dict[str, Any], url: str) -> str:
+    """Pick the best real thumbnail for visual cards.
+
+    Priority is intentionally crawler-first: use the real image fields saved by
+    crawl_greenbuilder.py before falling back to generated local thumb paths.
+    """
+    image = (
+        chunk.get("image")
+        or chunk.get("og_image")
+        or chunk.get("featured_image")
+        or chunk.get("thumbnail")
+        or chunk.get("thumbnail_url")
+        or source.get("image")
+        or source.get("og_image")
+        or source.get("featured_image")
+        or source.get("thumbnail")
+        or source.get("thumbnail_url")
+        or ""
+    )
+    if image:
+        return str(image)
+
+    return _thumb_for_url(url) if url else "/assets/thumbs/fallback-article.jpg"
+
+def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
     """Build a public SourceItem from a retrieved PDF chunk.
 
     This is a fallback safety net: even if a PDF chunk was missed by the normal
@@ -892,10 +658,6 @@ def _magazine_source_from_chunk(chunk: dict[str, Any], question: str = "") -> So
     because they are public archive material, not private draft material.
     """
     if not _is_magazine_chunk(chunk):
-        return None
-
-    if question and not _pdf_chunk_relevant_to_question(chunk, question):
-        print("Skipping weak magazine PDF source for question:", chunk.get("url") or chunk.get("pdf_filename"))
         return None
 
     visibility = chunk.get("visibility", "public")
@@ -938,61 +700,27 @@ def _magazine_source_from_chunk(chunk: dict[str, Any], question: str = "") -> So
     )
 
 
-
-
-def _find_relevant_magazine_sources(question: str, seen_urls: set[str], limit: int = 1) -> list[SourceItem]:
-    """Fallback: if normal retrieval found no PDF, run one magazine-focused search.
-
-    This keeps visual mode from dropping the magazine strip when the first
-    retrieval pass finds only blog/article chunks.
-    """
-    try:
-        magazine_chunks = search(f"{question} Green Builder Magazine PDF archive")
-    except Exception as exc:
-        print(f"Magazine fallback search failed: {exc}")
-        return []
-
-    found: list[SourceItem] = []
-
-    for chunk in _sort_pdf_chunks_by_relevance(magazine_chunks, question):
-        pdf_source = _magazine_source_from_chunk(chunk, question)
-        if not pdf_source:
-            continue
-        if pdf_source.url in seen_urls:
-            continue
-
-        found.append(pdf_source)
-        seen_urls.add(pdf_source.url)
-
-        if len(found) >= limit:
-            break
-
-    return found
-
-
 def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build visual article cards and magazine cards from public sources.
-
-    Article cards use local generated thumbnails first and also include the
-    original crawled image as remote_image. The widget tries local -> remote -> fallback.
-    """
+    """Build visual article cards and magazine cards from public sources."""
     cards: list[dict[str, Any]] = []
     magazines: list[dict[str, Any]] = []
 
     for raw_source in sources:
         source = _source_to_dict(raw_source)
-        url = str(source.get("url", "") or "")
+        url = str(source.get("url", ""))
         title = source.get("title") or "Green Builder Media source"
         excerpt = source.get("excerpt") or ""
         chunk = _find_chunk_for_source(source, chunks)
-        remote_image = _remote_image_from_chunk(chunk)
+        image = _thumbnail_from_chunk_or_source(chunk, source, url)
 
         if url.startswith("/magazines/") or "/magazines/" in url or str(source.get("source_type", "")) == "pdf":
+            filename = _asset_safe_name(url)
+            stem = Path(filename).stem
             magazines.append(
                 {
                     "title": title,
                     "url": url,
-                    "cover": _cover_for_magazine_url(url),
+                    "cover": f"/assets/covers/{stem}.jpg",
                     "issue": chunk.get("source_name") or source.get("attribution_label") or "Magazine archive",
                     "page": chunk.get("page"),
                     "type": "pdf",
@@ -1001,30 +729,18 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
                 }
             )
         else:
-            local_thumb = _thumb_for_url(url)
-            generated_thumb = _generated_thumb_for_url(url)
-            override_thumb = _override_thumb_for_url(url)
-
-            if _asset_exists(override_thumb):
-                card_image = override_thumb
-            elif _asset_exists(local_thumb):
-                card_image = local_thumb
-            elif _asset_exists(generated_thumb):
-                card_image = generated_thumb
-            else:
-                card_image = _topic_fallback_for_chunk(chunk)
-
+            source_type = _detect_source_type_from_url(url)
             cards.append(
                 {
                     "title": title,
                     "url": url,
                     "source": source.get("attribution_label") or "Green Builder",
                     "category": chunk.get("category") or source.get("attribution_label") or "Article",
-                    "image": card_image,
-                    "override_image": override_thumb,
-                    "generated_image": generated_thumb,
-                    "remote_image": remote_image,
-                    "type": "blog",
+                    # Frontend uses `image`; `thumbnail_url` is included for compatibility
+                    # with any newer card renderer that reads thumbnail-specific fields.
+                    "image": image,
+                    "thumbnail_url": image,
+                    "type": source_type,
                     "excerpt": excerpt,
                 }
             )
@@ -1032,99 +748,26 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
     return cards[:6], magazines[:3]
 
 
-def _fallback_key_insights(answer: str) -> list[dict[str, str]]:
-    """Fallback insight cards if the separate model summary fails."""
+def _build_key_insights(answer: str) -> list[dict[str, str]]:
+    """Create lightweight insight cards from the generated answer."""
     text = answer or ""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    insights: list[dict[str, str]] = []
+
     titles = ["Main takeaway", "Practical implication", "Tradeoff to consider"]
     icons = ["lightbulb", "check-circle", "scale"]
-    insights: list[dict[str, str]] = []
 
     for idx, paragraph in enumerate(paragraphs[:3]):
         short = paragraph
-        if len(short) > 220:
-            match = re.match(r"^(.{90,220}?[.!?])\s", short + " ")
-            short = match.group(1).strip() if match else short[:220].rsplit(" ", 1)[0].strip() + "..."
+        if len(short) > 260:
+            match = re.match(r"^(.{120,260}?[.!?])\s", short + " ")
+            short = match.group(1).strip() if match else short[:260].rsplit(" ", 1)[0].strip() + "..."
         insights.append({"title": titles[idx], "text": short, "icon": icons[idx]})
 
     if not insights and text:
         insights.append({"title": "Main takeaway", "text": _first_paragraph(text), "icon": "lightbulb"})
 
     return insights
-
-
-def _clean_insight_text(value: Any, max_chars: int = 185) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    if len(text) <= max_chars:
-        return text
-    match = re.match(rf"^(.{{80,{max_chars}}}?[.!?])\s", text + " ")
-    if match:
-        return match.group(1).strip()
-    return text[:max_chars].rsplit(" ", 1)[0].strip() + "..."
-
-
-def _build_key_insights(answer: str) -> list[dict[str, str]]:
-    """Create concise, non-repetitive editorial insight cards from the generated answer.
-
-    This intentionally uses a second, small model call so the visual cards are
-    tighter than the main answer instead of simply repeating its first paragraphs.
-    """
-    answer_text = (answer or "").strip()
-    if not answer_text:
-        return []
-
-    fallback = _fallback_key_insights(answer_text)
-
-    try:
-        prompt = (
-            "You are an editor for Green Builder Media. Create three compact insight cards "
-            "from the answer below. Do not repeat sentences from the answer. Synthesize. "
-            "Each text field must be useful, specific, and 16-28 words. "
-            "Return ONLY valid JSON as an array with exactly three objects. "
-            "Each object must have title and text. The titles must be exactly: "
-            "Main takeaway, Practical implication, Tradeoff to consider.\n\n"
-            f"ANSWER:\n{answer_text[:3500]}"
-        )
-
-        result = INSIGHTS_CLIENT.chat.completions.create(
-            model=INSIGHTS_MODEL,
-            temperature=0.25,
-            max_tokens=260,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You write concise editorial summaries and return strict JSON only.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        raw = result.choices[0].message.content or ""
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list):
-            return fallback
-
-        expected_titles = ["Main takeaway", "Practical implication", "Tradeoff to consider"]
-        icons = ["lightbulb", "check-circle", "scale"]
-        insights: list[dict[str, str]] = []
-
-        for idx, title in enumerate(expected_titles):
-            item = parsed[idx] if idx < len(parsed) and isinstance(parsed[idx], dict) else {}
-            text = _clean_insight_text(item.get("text", ""))
-            if not text:
-                text = fallback[idx]["text"] if idx < len(fallback) else ""
-            insights.append({"title": title, "text": text, "icon": icons[idx]})
-
-        return insights
-
-    except Exception as exc:
-        print(f"Insight card generation failed; using fallback: {exc}")
-        return fallback
 
 
 def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1178,6 +821,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     try:
         chunks = search(req.question)
+        chunks = _apply_smart_ranking(chunks)
+        chunks = _apply_source_weights_and_limits(chunks)
     except Exception as exc:
         error_text = str(exc)
         if "LanceDB table 'greenbuilder_chunks' not found" in error_text:
@@ -1257,22 +902,17 @@ def chat(req: ChatRequest) -> dict[str, Any]:
 
     private_used, attribution_note = summarize_private_usage(chunks)
 
-    # Build clean, deduplicated public source list from the same chunks that
-    # generated the answer. Public GBM URLs are allowed even if older index rows
-    # accidentally mark them visibility='private'. True private/internal drafts
-    # remain hidden.
+    # Build clean, deduplicated public source list.
+    # Blogs are deduplicated by URL.
+    # Magazine PDFs are deduplicated by PDF URL so each issue appears only once.
     seen = set()
-    sources: list[SourceItem] = []
-
+    sources = []
     for chunk in chunks:
-        if not _is_public_source_chunk(chunk):
+        if not _is_public_chunk(chunk):
             continue
+        visibility = "public"
 
-        url = str(chunk.get("url", "") or "").strip()
-        if not url:
-            pdf_filename = str(chunk.get("pdf_filename", "") or "").strip()
-            if pdf_filename.lower().endswith(".pdf"):
-                url = f"/magazines/{pdf_filename}"
+        url = chunk.get("url")
         if not url:
             continue
 
@@ -1281,10 +921,6 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         seen.add(url)
 
         is_magazine = _is_magazine_chunk(chunk)
-
-        if is_magazine and not _pdf_chunk_relevant_to_question(chunk, req.question):
-            print("Skipping weak magazine PDF chunk as source:", chunk.get("url") or chunk.get("pdf_filename"))
-            continue
 
         if is_magazine:
             clean_title = (
@@ -1300,69 +936,62 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                     clean_title = f"{clean_title} (PDF, p. {int(page)})"
                 except Exception:
                     clean_title = f"{clean_title} (PDF)"
-            elif not str(clean_title).lower().endswith("(pdf)"):
+            elif not clean_title.lower().endswith("(pdf)"):
                 clean_title = f"{clean_title} (PDF)"
 
             attribution_label = "Magazine archive"
-            surface_policy = "show_source"
         else:
             clean_title = chunk.get("title", "Untitled")
-            attribution_label = chunk.get("attribution_label") or chunk.get("source_name") or "Green Builder"
-            surface_policy = chunk.get("surface_policy") or "show_source"
-
-        try:
-            score = float(chunk.get("score", 0.0) or 0.0)
-        except Exception:
-            score = 0.0
+            attribution_label = chunk.get("attribution_label")
 
         sources.append(
             SourceItem(
-                title=str(clean_title),
+                title=clean_title,
                 url=url,
                 published_at=chunk.get("published_at"),
-                excerpt=str(chunk.get("text", "") or "")[:240].strip(),
-                score=score,
-                visibility="public",
+                excerpt=chunk.get("text", "")[:240].strip(),
+                score=float(chunk.get("score", 0.0)),
+                visibility=visibility,
                 attribution_label=attribution_label,
-                surface_policy=surface_policy,
+                surface_policy=chunk.get("surface_policy"),
             )
         )
 
-    blog_sources = [s for s in sources if not s.url.startswith("/magazines/") and "/magazines/" not in s.url]
-    pdf_sources = [s for s in sources if s.url.startswith("/magazines/") or "/magazines/" in s.url]
+    # Ensure magazine PDF sources appear if magazine chunks were used.
+    # This fallback matters because PDFs are public archive content and must not
+    # be hidden like private draft HTML, even when private archive material also
+    # influenced the answer.
+    blog_sources = [s for s in sources if _detect_source_type_from_url(s.url) == "blog"]
+    web_sources = [s for s in sources if _detect_source_type_from_url(s.url) == "webpage"]
+    pdf_sources = [s for s in sources if _detect_source_type_from_url(s.url) == "magazine"]
 
     if not pdf_sources:
         seen_pdf_urls = {s.url for s in pdf_sources}
-
-        for chunk in _sort_pdf_chunks_by_relevance(chunks, req.question):
-            pdf_source = _magazine_source_from_chunk(chunk, req.question)
+        for chunk in chunks:
+            pdf_source = _magazine_source_from_chunk(chunk)
             if pdf_source and pdf_source.url not in seen_pdf_urls:
                 pdf_sources.append(pdf_source)
                 seen_pdf_urls.add(pdf_source.url)
             if len(pdf_sources) >= 3:
                 break
 
-        if not pdf_sources:
-            pdf_sources.extend(
-                _find_relevant_magazine_sources(req.question, seen_pdf_urls, limit=1)
-            )
+    # Final public source caps:
+    # - no more than 3 blog citations
+    # - no more than 3 webpage / HubSpot landing-page links
+    # - keep one magazine/PDF citation when relevant
+    final_sources = []
+    final_sources.extend(blog_sources[:3])
+    final_sources.extend(web_sources[:3])
 
-    # Keep only PDF citations that have page-level support for the user's question.
-    pdf_sources = [
-        s for s in pdf_sources
-        if _pdf_chunk_relevant_to_question(_find_chunk_for_source(_source_to_dict(s), chunks), req.question)
-    ]
-
-    final_sources: list[SourceItem] = []
-    final_sources.extend(blog_sources[:5])
     if pdf_sources:
         final_sources.append(pdf_sources[0])
+
     if not final_sources:
-        final_sources = sources[:6]
+        final_sources = sources[:7]
 
     response = ChatResponse(
         answer=answer,
-        sources=final_sources[:6],
+        sources=final_sources[:7],
         private_archive_used=private_used,
         attribution_note=attribution_note,
     )
@@ -1407,81 +1036,6 @@ def admin_create_correction(
         {**payload.model_dump(), "editor_name": payload.editor_name or username}
     )
     return {"ok": True, "message": "Correction saved", "correction": saved}
-
-
-THUMB_OVERRIDE_DIR = Path("/data/assets/thumbs/overrides")
-THUMB_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _slug_for_article_url(url: str) -> str:
-    path = urlparse(str(url or "")).path.strip("/")
-    slug = Path(path).name or "article"
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", slug).strip("-") or "article"
-    return slug
-
-
-@app.post("/api/admin/upload-thumbnail")
-async def upload_thumbnail_override(
-    url: str,
-    file: UploadFile = File(...),
-    _: str = Depends(admin_auth),
-) -> dict:
-    """Upload an editor-approved article thumbnail override.
-
-    The uploaded image is center-cropped to 640x360 and saved to:
-    /data/assets/thumbs/overrides/<article-slug>.jpg
-
-    Existing chat cards automatically prefer this override over scraped,
-    generated, or fallback thumbnails.
-    """
-    try:
-        clean_url = str(url or "").strip()
-        if not (
-            clean_url.startswith("https://www.greenbuildermedia.com/blog/")
-            or clean_url.startswith("https://greenbuildermedia.com/blog/")
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Use a public Green Builder blog URL.",
-            )
-
-        if not (file.content_type or "").startswith("image/"):
-            raise HTTPException(status_code=400, detail="Upload must be an image file.")
-
-        slug = _slug_for_article_url(clean_url)
-        dest = THUMB_OVERRIDE_DIR / f"{slug}.jpg"
-
-        contents = await file.read()
-        img = Image.open(BytesIO(contents)).convert("RGB")
-
-        target_w, target_h = 640, 360
-        img_ratio = img.width / img.height
-        target_ratio = target_w / target_h
-
-        if img_ratio > target_ratio:
-            new_h = target_h
-            new_w = int(new_h * img_ratio)
-        else:
-            new_w = target_w
-            new_h = int(new_w / img_ratio)
-
-        img = img.resize((new_w, new_h))
-        left = max(0, (new_w - target_w) // 2)
-        top = max(0, (new_h - target_h) // 2)
-        img = img.crop((left, top, left + target_w, top + target_h))
-
-        img.save(dest, "JPEG", quality=88, optimize=True)
-
-        return {
-            "ok": True,
-            "message": "Thumbnail override uploaded.",
-            "path": f"/assets/thumbs/overrides/{slug}.jpg",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/admin/rebuild-index")
@@ -1684,7 +1238,6 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                     shutil.move(str(inbox_file), str(processing_file))
 
                 if magazine_file.exists() and magazine_file.stat().st_size > 0:
-                    ensure_magazine_cover_for_pdf(magazine_file)
                     skipped.append({
                         "file": filename,
                         "reason": "A PDF with this filename already exists in /data/magazines. Skipped to avoid duplicate ingest.",
@@ -1712,7 +1265,6 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                         if magazine_file.exists():
                             shutil.move(str(magazine_file), str(failed_file))
                     else:
-                        ensure_magazine_cover_for_pdf(magazine_file)
                         succeeded.append({"file": filename, "stored_at": str(magazine_file)})
                         done_marker.write_text(f"Ingested successfully on {datetime.utcnow().isoformat()} UTC. Stored at: {magazine_file}\n")
 
@@ -2046,36 +1598,5 @@ async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depend
 ASSETS_DIR = Path("/data/assets")
 (ASSETS_DIR / "thumbs").mkdir(parents=True, exist_ok=True)
 (ASSETS_DIR / "covers").mkdir(parents=True, exist_ok=True)
-(ASSETS_DIR / "thumbs" / "generated").mkdir(parents=True, exist_ok=True)
-(ASSETS_DIR / "thumbs" / "overrides").mkdir(parents=True, exist_ok=True)
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
-
-from fastapi import HTTPException
-from fastapi.responses import FileResponse
-import os
-import shutil
-
-@app.get("/download-backup")
-def download_backup(token: str = ""):
-    expected_token = os.getenv("BACKUP_TOKEN")
-
-    if not expected_token:
-        raise HTTPException(status_code=500, detail="BACKUP_TOKEN is not configured")
-
-    if token != expected_token:
-        raise HTTPException(status_code=403, detail="Invalid backup token")
-
-    backup_path_base = "/tmp/chatbot_backup"
-    backup_zip = backup_path_base + ".zip"
-
-    if os.path.exists(backup_zip):
-        os.remove(backup_zip)
-
-    shutil.make_archive(backup_path_base, "zip", "/data")
-
-    return FileResponse(
-        backup_zip,
-        filename="chatbot_backup.zip",
-        media_type="application/zip"
-    )
