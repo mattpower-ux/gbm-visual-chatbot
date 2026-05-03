@@ -156,22 +156,7 @@ def choose_entries_for_this_run(entries: List[SitemapEntry], full_crawl: bool) -
     )
 
 
-def allow_url(url: str) -> bool:
-    """Return True for public GBM content pages worth indexing.
 
-    This deliberately includes HubSpot-style landing/resource pages in addition
-    to blog and magazine content, while blocking system/archive/junk pages that
-    create duplicate or low-value search results.
-    """
-    parsed = urlparse(url)
-
-    if parsed.netloc not in {"www.greenbuildermedia.com", "greenbuildermedia.com"}:
-        return False
-
-    url_lower = (url or "").lower()
-    path_lower = parsed.path.lower()
-
-    blocked = [
         "/_hcms/preview/",
         "/hs/manage-preferences/",
         "/hs/preferences-center/",
@@ -209,6 +194,61 @@ def allow_url(url: str) -> bool:
         "/sustainable-products",
     ]
     return any(part in path_lower for part in allowed)
+✂️ REPLACE WITH THIS:
+def allow_url(url: str) -> bool:
+    """
+    Allow all real public GBM pages, not just predefined sections.
+    Block only junk/system/preview URLs and static assets.
+    """
+
+    parsed = urlparse(url)
+
+    # Only allow GBM domain
+    if parsed.netloc not in {"www.greenbuildermedia.com", "greenbuildermedia.com"}:
+        return False
+
+    u = (url or "").lower()
+
+    # ❌ Block HubSpot preview/draft/system URLs
+    blocked = [
+        "/_hcms/",
+        "/hs/",
+        "hs_preview",
+        "preview=",
+        "preview_key",
+        "portalid=",
+        "contentid=",
+
+        # archive / low-value pages
+        "/tag/",
+        "/author/",
+        "/page/",
+
+        # non-content
+        "mailto:",
+        "tel:",
+        "#",
+    ]
+
+    if any(b in u for b in blocked):
+        return False
+
+    # ❌ Block static assets
+    if u.endswith((
+        ".jpg", ".jpeg", ".png", ".gif", ".webp",
+        ".svg", ".css", ".js", ".ico", ".pdf"
+    )):
+        return False
+
+    # ❌ Skip homepage root (optional)
+    if u.rstrip("/") in {
+        "https://www.greenbuildermedia.com",
+        "https://greenbuildermedia.com",
+    }:
+        return False
+
+    # ✅ Everything else is allowed
+    return True
 
 
 
