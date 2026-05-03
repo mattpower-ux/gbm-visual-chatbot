@@ -398,7 +398,7 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
     return (
         url.startswith("/magazines/")
         or "/magazines/" in url
-        or source_type == "pdf"
+        or source_type in {"pdf", "magazine"}
         or pdf_filename.lower().endswith(".pdf")
     )
 
@@ -649,6 +649,37 @@ def _thumbnail_from_chunk_or_source(chunk: dict[str, Any], source: dict[str, Any
         return str(image)
 
     return _thumb_for_url(url) if url else "/assets/thumbs/fallback-article.jpg"
+
+
+def _source_public_payload(source: Any, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return source metadata for logs/admin UI without changing the SourceItem model.
+
+    The admin console reads `public_sources` from logs. SourceItem intentionally
+    remains conservative, so this function enriches the serialized source with
+    crawler image fields and normalized source_type for display only.
+    """
+    source_dict = _source_to_dict(source)
+    chunk = _find_chunk_for_source(source_dict, chunks)
+    url = str(source_dict.get("url", "") or chunk.get("url", ""))
+    source_type = _detect_source_type(chunk) if chunk else _detect_source_type_from_url(url)
+    image = _thumbnail_from_chunk_or_source(chunk, source_dict, url)
+
+    source_dict["source_type"] = source_type
+    source_dict["type"] = source_type
+    source_dict["image"] = image
+    source_dict["thumbnail"] = image
+    source_dict["thumbnail_url"] = image
+
+    for key in ("og_image", "featured_image", "category", "page", "pdf_filename", "source_name"):
+        if key not in source_dict and chunk.get(key) is not None:
+            source_dict[key] = chunk.get(key)
+
+    return source_dict
+
+
+def _public_sources_payload(sources: list[Any], chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_source_public_payload(source, chunks) for source in sources]
+
 
 def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
     """Build a public SourceItem from a retrieved PDF chunk.
@@ -1005,7 +1036,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             "user_agent": req.user_agent,
             "event_query": future_query,
             "answer": response.answer,
-            "public_sources": [s.model_dump() for s in response.sources],
+            "public_sources": _public_sources_payload(response.sources, chunks),
             "private_archive_used": private_used,
             "attribution_note": attribution_note,
         }
