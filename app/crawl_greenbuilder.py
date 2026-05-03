@@ -144,21 +144,81 @@ def choose_entries_for_this_run(entries: List[SitemapEntry], full_crawl: bool) -
 
 
 def allow_url(url: str) -> bool:
+    """Return True for public GBM content pages worth indexing.
+
+    This deliberately includes HubSpot-style landing/resource pages in addition
+    to blog and magazine content, while blocking system/archive/junk pages that
+    create duplicate or low-value search results.
+    """
     parsed = urlparse(url)
+
     if parsed.netloc not in {"www.greenbuildermedia.com", "greenbuildermedia.com"}:
         return False
-    blocked = ["/_hcms/preview/", "/hs/manage-preferences/", "/hs/preferences-center/"]
-    if any(part in url for part in blocked):
+
+    url_lower = (url or "").lower()
+    path_lower = parsed.path.lower()
+
+    blocked = [
+        "/_hcms/preview/",
+        "/hs/manage-preferences/",
+        "/hs/preferences-center/",
+        "/tag/",
+        "/author/",
+        "/page/",
+        "mailto:",
+        "tel:",
+        "#",
+    ]
+    if any(part in url_lower for part in blocked):
         return False
-    likely_content = [
+
+    allowed = [
         "/blog",
         "/magazine",
         "/ebooks",
         "/podcasts",
         "/vision-house",
         "/todays-homeowner",
+
+        # HubSpot / landing-page / marketing-resource paths
+        "/resources",
+        "/lp/",
+        "/landing-pages",
+        "/offers",
+        "/webinars",
+        "/events",
+        "/guides",
+        "/reports",
     ]
-    return any(part in parsed.path.lower() for part in likely_content)
+    return any(part in path_lower for part in allowed)
+
+
+def detect_source_type_from_url(url: str) -> str:
+    """Classify crawled public URLs for downstream weighting and source caps."""
+    u = (url or "").lower()
+
+    if "/blog/" in u or u.rstrip("/").endswith("/blog"):
+        return "blog"
+
+    if "/magazines/" in u or "/magazine" in u or u.endswith(".pdf"):
+        return "magazine"
+
+    if any(p in u for p in [
+        "/lp/",
+        "/landing-pages/",
+        "/resources/",
+        "/ebooks/",
+        "/webinars/",
+        "/offers/",
+        "/events/",
+        "/guides/",
+        "/reports/",
+        "/vision-house/",
+        "/todays-homeowner/",
+    ]):
+        return "webpage"
+
+    return "webpage"
 
 
 async def fetch_text(client: httpx.AsyncClient, url: str) -> str:
@@ -368,25 +428,63 @@ def normalize_image_url(image_url: str, page_url: str) -> str:
 
 
 def extract_best_image(soup: BeautifulSoup, page_url: str) -> dict[str, str]:
-    og_image = meta_content(soup, property_name="og:image") or meta_content(soup, property_name="og:image:secure_url")
-    twitter_image = meta_content(soup, name="twitter:image") or meta_content(soup, property_name="twitter:image")
+    """Extract the best available thumbnail image for a crawled page.
+
+    Preference order:
+    1. Open Graph image
+    2. Twitter card image
+    3. First content image in article/main/body
+    4. Local fallback thumbnail so the UI never receives an empty image field
+    """
+    og_image = (
+        meta_content(soup, property_name="og:image")
+        or meta_content(soup, property_name="og:image:secure_url")
+    )
+    twitter_image = (
+        meta_content(soup, name="twitter:image")
+        or meta_content(soup, property_name="twitter:image")
+    )
+
     featured_image = ""
     article_or_main = soup.find("article") or soup.find("main") or soup.body
+
     if article_or_main:
         img = article_or_main.find("img")
         if img:
-            featured_image = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or img.get("data-original") or ""
+            featured_image = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-lazy-src")
+                or img.get("data-original")
+                or (img.get("srcset", "").split(" ")[0] if img.get("srcset") else "")
+                or ""
+            )
+
     if not featured_image:
         img = soup.find("img")
         if img:
-            featured_image = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or img.get("data-original") or ""
-    thumbnail = og_image or twitter_image or featured_image
+            featured_image = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-lazy-src")
+                or img.get("data-original")
+                or (img.get("srcset", "").split(" ")[0] if img.get("srcset") else "")
+                or ""
+            )
+
     og_image = normalize_image_url(og_image, page_url)
     twitter_image = normalize_image_url(twitter_image, page_url)
     featured_image = normalize_image_url(featured_image, page_url)
-    thumbnail = normalize_image_url(thumbnail, page_url)
-    best = og_image or twitter_image or featured_image or thumbnail
-    return {"image": best, "og_image": og_image, "featured_image": featured_image, "thumbnail": thumbnail}
+
+    thumbnail = og_image or twitter_image or featured_image
+    best = thumbnail or "/assets/thumbs/fallback-article.jpg"
+
+    return {
+        "image": best,
+        "og_image": og_image,
+        "featured_image": featured_image,
+        "thumbnail": thumbnail or best,
+    }
 
 
 def extract_metadata(html: str, url: str) -> Doc | None:
@@ -430,7 +528,7 @@ def extract_metadata(html: str, url: str) -> Doc | None:
         visibility="public",
         attribution_label="Green Builder Media",
         surface_policy="public",
-        source_type="article",
+        source_type=detect_source_type_from_url(canonical_url),
     )
 
 
