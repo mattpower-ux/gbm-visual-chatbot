@@ -156,100 +156,61 @@ def choose_entries_for_this_run(entries: List[SitemapEntry], full_crawl: bool) -
     )
 
 
-
-        "/_hcms/preview/",
-        "/hs/manage-preferences/",
-        "/hs/preferences-center/",
-        "/tag/",
-        "/author/",
-        "/page/",
-        "mailto:",
-        "tel:",
-        "#",
-    ]
-    if any(part in url_lower for part in blocked):
-        return False
-
-    allowed = [
-        "/blog",
-        "/magazine",
-        "/ebooks",
-        "/podcasts",
-        "/vision-house",
-        "/todays-homeowner",
-
-        # HubSpot / landing-page / marketing-resource paths
-        "/resources",
-        "/lp/",
-        "/landing-pages",
-        "/offers",
-        "/webinars",
-        "/events",
-        "/guides",
-        "/reports",
-        "/white-papers",
-        "/whitepapers",
-        "/case-studies",
-        "/case-study",
-        "/sustainable-products",
-    ]
-    return any(part in path_lower for part in allowed)
-✂️ REPLACE WITH THIS:
 def allow_url(url: str) -> bool:
-    """
-    Allow all real public GBM pages, not just predefined sections.
-    Block only junk/system/preview URLs and static assets.
-    """
+    """Return True for public GBM content pages worth indexing.
 
-    parsed = urlparse(url)
+    The GBM site uses many clean, top-level HubSpot URLs for landing pages,
+    digital issues, products-used pages, Vision House pages, symposium pages,
+    and other public resources. Earlier versions only allowed known folders
+    such as /blog and /webinars, which blocked most non-blog pages.
 
-    # Only allow GBM domain
+    This version allows public greenbuildermedia.com HTML pages by default
+    and blocks only system, draft/preview, archive, author/tag, and asset URLs.
+    """
+    parsed = urlparse(url or "")
+
     if parsed.netloc not in {"www.greenbuildermedia.com", "greenbuildermedia.com"}:
         return False
 
-    u = (url or "").lower()
+    u = (url or "").strip().lower()
+    path_lower = parsed.path.lower()
 
-    # ❌ Block HubSpot preview/draft/system URLs
+    # Block HubSpot/system/preview/draft URLs and low-value archive pages.
     blocked = [
         "/_hcms/",
         "/hs/",
         "hs_preview",
-        "preview=",
-        "preview_key",
+        "hs_preview_key",
+        "hs_preview_theme",
+        "hspreview",
+        "preview_key=",
+        "preview=true",
         "portalid=",
         "contentid=",
-
-        # archive / low-value pages
         "/tag/",
         "/author/",
         "/page/",
-
-        # non-content
         "mailto:",
         "tel:",
         "#",
     ]
-
-    if any(b in u for b in blocked):
+    if any(part in u for part in blocked):
         return False
 
-    # ❌ Block static assets
-    if u.endswith((
-        ".jpg", ".jpeg", ".png", ".gif", ".webp",
-        ".svg", ".css", ".js", ".ico", ".pdf"
+    # Block obvious static assets and downloadable binaries here. Magazine PDFs
+    # are handled by the PDF ingest pipeline, not the HTML crawler.
+    if path_lower.endswith((
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
+        ".css", ".js", ".ico", ".woff", ".woff2", ".ttf",
+        ".pdf", ".zip", ".mp4", ".mov", ".avi",
     )):
         return False
 
-    # ❌ Skip homepage root (optional)
-    if u.rstrip("/") in {
-        "https://www.greenbuildermedia.com",
-        "https://greenbuildermedia.com",
-    }:
+    # Skip the bare homepage as a search result; it is mainly navigation.
+    if u.rstrip("/") in {"https://www.greenbuildermedia.com", "https://greenbuildermedia.com"}:
         return False
 
-    # ✅ Everything else is allowed
     return True
-
 
 
 
