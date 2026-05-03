@@ -8,11 +8,18 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
+try:
+    from PIL import Image
+except Exception:  # Optional dependency; cover generation fails open.
+    Image = None
+
 import lancedb
 from openai import OpenAI
 from pypdf import PdfReader
 
 MAGAZINE_DIR = Path(os.getenv("MAGAZINE_DIR", "/data/magazines"))
+ASSETS_DIR = Path(os.getenv("ASSETS_DIR", "/data/assets"))
+COVERS_DIR = ASSETS_DIR / "covers"
 LANCEDB_DIR = os.getenv("LANCEDB_DIR", "/data/lancedb")
 TABLE_NAME = os.getenv("LANCEDB_TABLE", "greenbuilder_chunks")
 PUBLIC_MAGAZINE_PREFIX = os.getenv("PUBLIC_MAGAZINE_PREFIX", "/magazines")
@@ -231,6 +238,68 @@ def safe_title_from_filename(filename: str) -> str:
     return re.sub(r"\s+", " ", stem).strip() or filename
 
 
+
+
+def pdf_year_from_filename(filename: str) -> str:
+    """Extract a four-digit issue year from a magazine PDF filename."""
+    match = re.search(r"\b(20\d{2}|19\d{2})\b", filename or "")
+    return match.group(1) if match else ""
+
+
+def pdf_issue_from_filename(filename: str) -> str:
+    """Extract a readable issue label from filenames such as '032 Green Builder May-Jun 2019.pdf'."""
+    stem = Path(filename or "").stem
+    stem = re.sub(r"^\d+\s+", "", stem).strip()
+    stem = re.sub(r"\s+", " ", stem)
+    return stem
+
+
+def public_cover_path_for_pdf(filename: str) -> str:
+    """Return the public cover URL used by main.py/card UI for this PDF."""
+    encoded = quote(filename)
+    stem = Path(encoded).stem
+    return f"/assets/covers/{stem}.jpg"
+
+
+def local_cover_path_for_pdf(filename: str) -> Path:
+    encoded = quote(filename)
+    stem = Path(encoded).stem
+    return COVERS_DIR / f"{stem}.jpg"
+
+
+def generate_pdf_cover(pdf_path: Path) -> str:
+    """Generate a JPEG cover thumbnail from page 1 of a PDF when possible.
+
+    This uses PyMuPDF if available. It fails open and returns the expected public
+    cover path even if rendering is unavailable, so the UI can still fall back.
+    """
+    COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    output = local_cover_path_for_pdf(pdf_path.name)
+    public_path = public_cover_path_for_pdf(pdf_path.name)
+
+    if output.exists() and output.stat().st_size > 0:
+        return public_path
+
+    try:
+        import fitz  # PyMuPDF
+
+        with fitz.open(str(pdf_path)) as doc:
+            if len(doc) == 0:
+                return public_path
+            page = doc[0]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+            if Image is not None:
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                img.thumbnail((640, 900))
+                img.save(output, "JPEG", quality=86)
+            else:
+                pix.save(str(output))
+        log(f"Generated magazine cover: {output}")
+    except Exception as exc:
+        log(f"Warning: could not generate cover for {pdf_path.name}: {exc}")
+
+    return public_path
+
 def row_id(pdf_filename: str, page_num: int, chunk_index: int, text: str) -> str:
     raw = f"{pdf_filename}|{page_num}|{chunk_index}|{text[:120]}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -314,7 +383,10 @@ def normalize_row_for_table(row: dict, fields: set[str]) -> dict:
         "thumbnail": None,
         "og_image": None,
         "featured_image": None,
-        "thumbnail_url": None,
+        "thumbnail_url": row.get("thumbnail_url"),
+        "pdf_year": row.get("pdf_year"),
+        "pdf_issue": row.get("pdf_issue"),
+        "cover_url": row.get("cover_url"),
         "page": row.get("page"),
         "source_name": row.get("source_name"),
         "pdf_filename": row.get("pdf_filename"),
@@ -461,6 +533,9 @@ def ingest_one(filename: str) -> int:
 
     # Keep the public URL browser-safe while leaving the physical PDF in /data/magazines.
     pdf_url = f"{PUBLIC_MAGAZINE_PREFIX}/{quote(pdf_path.name)}"
+    pdf_year = pdf_year_from_filename(pdf_path.name)
+    pdf_issue = pdf_issue_from_filename(pdf_path.name)
+    cover_url = generate_pdf_cover(pdf_path)
 
     if url_already_ingested(table, pdf_url):
         log(f"SKIP already ingested: {pdf_path.name}")
@@ -497,9 +572,9 @@ def ingest_one(filename: str) -> int:
                 "title": title,
                 "url": pdf_url,
                 "text": text,
-                "embed_text": f"Title: {title}\nSource: Green Builder Magazine PDF\nPage: {page_num}\nText: {text}",
+                "embed_text": f"Title: {title}\nSource: Green Builder Magazine PDF\nIssue: {pdf_issue}\nYear: {pdf_year}\nFile: {pdf_path.name}\nPage: {page_num}\nText: {text}",
                 "page": page_num,
-                "published_at": "",
+                "published_at": pdf_year or "",
                 "category": "Magazine archive",
                 "visibility": "public",
                 "attribution_label": "Magazine archive",
@@ -507,6 +582,12 @@ def ingest_one(filename: str) -> int:
                 "source_type": "magazine",
                 "source_name": source_title,
                 "pdf_filename": pdf_path.name,
+                "pdf_year": pdf_year,
+                "pdf_issue": pdf_issue,
+                "cover_url": cover_url,
+                "image": cover_url,
+                "thumbnail": cover_url,
+                "thumbnail_url": cover_url,
                 "chunk_index": chunk_index - 1,
                 "chunk_count": chunk_count,
                 "relevance_hint": relevance_hint(text),
