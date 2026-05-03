@@ -23,6 +23,19 @@ DEBUG_TARGET_PATTERNS = [
     "sustainable-brand-index-2026",
 ]
 
+# Seed pages used to discover HubSpot landing/resource pages that may not appear
+# in the XML sitemap. Keep this list public-site only to avoid draft/preview URLs.
+LANDING_DISCOVERY_SEED_PATHS = [
+    "/resources",
+    "/ebooks",
+    "/webinars",
+    "/events",
+    "/offers",
+    "/vision-house",
+    "/todays-homeowner",
+    "/green-builder-magazine",
+]
+
 FULL_CRAWL_INTERVAL_DAYS = 5
 RECENT_LOOKBACK_HOURS = 24
 CRAWL_STATE_FILE_NAME = "crawl_state.json"
@@ -189,6 +202,11 @@ def allow_url(url: str) -> bool:
         "/events",
         "/guides",
         "/reports",
+        "/white-papers",
+        "/whitepapers",
+        "/case-studies",
+        "/case-study",
+        "/sustainable-products",
     ]
     return any(part in path_lower for part in allowed)
 
@@ -709,6 +727,45 @@ def save_docs(docs_path: Path, docs_by_url: Dict[str, Doc]) -> None:
             f.write(json.dumps(asdict(doc), ensure_ascii=False) + "\n")
 
 
+
+
+async def discover_landing_links(client: httpx.AsyncClient, base_url: str) -> list[SitemapEntry]:
+    """Discover public landing/resource URLs from known GBM hub pages.
+
+    The XML sitemap is blog-heavy, so this light link crawl finds public HubSpot
+    landing pages, resource pages, offers, webinar pages, and VISION House pages
+    that would otherwise be underrepresented. Draft/preview links are still
+    blocked by is_public_indexable_url().
+    """
+    discovered: dict[str, SitemapEntry] = {}
+    root = (base_url or "https://www.greenbuildermedia.com").rstrip("/")
+
+    for path in LANDING_DISCOVERY_SEED_PATHS:
+        seed_url = urljoin(root + "/", path.lstrip("/"))
+        if not is_public_indexable_url(seed_url):
+            continue
+        try:
+            html = await fetch_text(client, seed_url)
+        except Exception as exc:
+            print(f"Seed discovery skipped {seed_url}: {exc}")
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = (a.get("href") or "").strip()
+            if not href:
+                continue
+            absolute = urljoin(seed_url, href).split("#", 1)[0]
+            if not is_public_indexable_url(absolute):
+                continue
+            # Prefer landing/resource-ish pages, but keep VISION/Today pages too.
+            if detect_source_type_from_url(absolute) == "webpage":
+                discovered[absolute] = SitemapEntry(url=absolute, lastmod=None)
+
+        await asyncio.sleep(random.uniform(0.4, 0.9))
+
+    return list(discovered.values())
+
 async def main() -> None:
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -726,14 +783,20 @@ async def main() -> None:
     async with httpx.AsyncClient(headers=headers) as client:
         sitemap_entries = await fetch_sitemap_urls(client, settings.sitemap_url)
         sitemap_entries = [e for e in sitemap_entries if allow_url(e.url)]
+        discovered_entries = await discover_landing_links(client, settings.site_base_url)
+        if discovered_entries:
+            print(f"Landing/resource URLs discovered from seed pages: {len(discovered_entries)}")
+            sitemap_entries.extend(discovered_entries)
         deduped: Dict[str, SitemapEntry] = {}
         for entry in sitemap_entries:
             deduped[entry.url] = entry
         all_entries = list(deduped.values())
+        webpage_candidates = sum(1 for e in all_entries if detect_source_type_from_url(e.url) == "webpage")
         entries_to_crawl = choose_entries_for_this_run(all_entries, full_crawl)
         mode = "FULL" if full_crawl else "RECENT"
         print(f"Crawl mode: {mode}")
         print(f"Candidate URLs total: {len(all_entries)}")
+        print(f"Candidate webpage/landing URLs: {webpage_candidates}")
         print(f"URLs selected this run: {len(entries_to_crawl)}")
         existing_docs = load_existing_docs(docs_path)
         results_by_url: Dict[str, Doc] = existing_docs.copy()
