@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -20,6 +21,8 @@ EMBED_BATCH_SIZE = 16
 EMBED_MAX_RETRIES = 6
 EMBED_BASE_SLEEP_SECONDS = 5.0
 EMBED_BETWEEN_BATCH_SLEEP_SECONDS = 1.0
+AUTO_INGEST_MAGAZINES_AFTER_REBUILD = os.getenv("AUTO_INGEST_MAGAZINES_AFTER_REBUILD", "true").strip().lower() in {"1", "true", "yes", "on"}
+MAGAZINE_DIR = Path(os.getenv("MAGAZINE_DIR", "/data/magazines"))
 
 
 def normalize_whitespace(text: str) -> str:
@@ -218,6 +221,10 @@ def normalize_doc(doc: Dict) -> Dict:
         "og_image": clean_optional_string(doc.get("og_image")),
         "featured_image": clean_optional_string(doc.get("featured_image")),
         "thumbnail_url": clean_optional_string(doc.get("thumbnail_url") or doc.get("thumbnail") or doc.get("image")),
+        "page": None,
+        "source_name": None,
+        "pdf_filename": None,
+        "relevance_hint": None,
         "text": doc.get("text", ""),
         "visibility": visibility,
         "attribution_label": attribution_label,
@@ -286,6 +293,44 @@ def embed_batch_with_retry(client: OpenAI, model: str, batch: List[str], batch_n
     )
 
 
+def ingest_magazines_after_web_rebuild() -> int:
+    """Append public magazine PDFs after the web index rebuild.
+
+    build_index.py recreates the LanceDB table, so PDF rows previously appended
+    by scripts/ingest_one_magazine.py would otherwise disappear. This keeps the
+    table unified: blog + webpage + magazine/PDF chunks.
+    """
+    if not AUTO_INGEST_MAGAZINES_AFTER_REBUILD:
+        print("Magazine auto-ingest after rebuild disabled by AUTO_INGEST_MAGAZINES_AFTER_REBUILD.")
+        return 0
+
+    if not MAGAZINE_DIR.exists():
+        print(f"Magazine directory not found; skipping PDF ingest: {MAGAZINE_DIR}")
+        return 0
+
+    pdfs = sorted(MAGAZINE_DIR.glob("*.pdf"))
+    if not pdfs:
+        print(f"No magazine PDFs found in {MAGAZINE_DIR}; skipping PDF ingest.")
+        return 0
+
+    try:
+        from scripts.ingest_one_magazine import ingest_one
+    except Exception as exc:
+        print(f"Could not import magazine ingest script; skipping PDFs: {exc}")
+        return 0
+
+    total_added = 0
+    print(f"Adding {len(pdfs)} magazine PDF(s) to rebuilt index...")
+    for pdf in pdfs:
+        try:
+            added = ingest_one(pdf.name)
+            total_added += int(added or 0)
+        except Exception as exc:
+            print(f"Magazine ingest failed for {pdf.name}: {exc}")
+
+    return total_added
+
+
 def main() -> None:
     settings = get_settings()
     client = OpenAI(api_key=settings.openai_api_key)
@@ -322,6 +367,10 @@ def main() -> None:
                     "og_image": doc.get("og_image"),
                     "featured_image": doc.get("featured_image"),
                     "thumbnail_url": doc.get("thumbnail_url"),
+                    "page": doc.get("page"),
+                    "source_name": doc.get("source_name"),
+                    "pdf_filename": doc.get("pdf_filename"),
+                    "relevance_hint": doc.get("relevance_hint"),
                     "text": chunk,
                     "embed_text": embed_text,
                     "chunk_index": idx,
@@ -383,6 +432,10 @@ def main() -> None:
             pa.field("og_image", pa.string()),
             pa.field("featured_image", pa.string()),
             pa.field("thumbnail_url", pa.string()),
+            pa.field("page", pa.int32()),
+            pa.field("source_name", pa.string()),
+            pa.field("pdf_filename", pa.string()),
+            pa.field("relevance_hint", pa.int32()),
             pa.field("text", pa.string()),
             pa.field("embed_text", pa.string()),
             pa.field("chunk_index", pa.int32()),
