@@ -78,16 +78,123 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 120) -> List[str
     return cleaned
 
 
+def is_safe_public_url(url: str) -> bool:
+    """Reject HubSpot preview/draft/system URLs and non-public draft archives.
+
+    This is intentionally duplicated here even though the crawler also filters
+    URLs. The index builder is the last safety gate before content reaches
+    LanceDB, so old unsafe records already sitting in documents.jsonl cannot
+    re-enter the chatbot.
+    """
+    u = str(url or "").strip().lower()
+
+    if not u:
+        return False
+
+    blocked_patterns = [
+        "/_hcms/preview/",
+        "_hcms/preview",
+        "hs_preview=",
+        "hs_preview_key=",
+        "hs_preview_theme=",
+        "hspreview=",
+        "preview_key=",
+        "preview=true",
+        "draft",
+        "/hs/manage-preferences/",
+        "/hs/preferences-center/",
+        "app.hubspot.com",
+        "preview.hs-sites.com",
+        "preview.hs-sites",
+        "sandbox.hs-sites",
+        "localhost",
+    ]
+    if any(pattern in u for pattern in blocked_patterns):
+        return False
+
+    if u.startswith("/magazines/") or "/magazines/" in u:
+        return True
+
+    return u.startswith("https://www.greenbuildermedia.com/") or u.startswith("https://greenbuildermedia.com/")
+
+
+def is_indexable_doc(doc: Dict) -> bool:
+    """Final index-level gate for public chatbot content.
+
+    Blocks old draft_html/private/draft records even if they remain in
+    documents.jsonl from earlier ingestion experiments.
+    """
+    source_type = str(doc.get("source_type", "") or "").strip().lower()
+    visibility = str(doc.get("visibility", "public") or "public").strip().lower()
+    surface_policy = str(doc.get("surface_policy", "public") or "public").strip().lower()
+    url = str(doc.get("url", "") or "").strip()
+
+    if source_type in {"draft_html", "draft", "preview", "private"}:
+        return False
+
+    if visibility in {"private", "internal", "draft", "hidden", "false", "0"}:
+        return False
+
+    if surface_policy == "blocked":
+        return False
+
+    if not is_safe_public_url(url):
+        return False
+
+    return True
+
+
 def load_documents(path: Path) -> Iterable[Dict]:
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                yield json.loads(line)
+    skipped_bad_json = 0
+    skipped_unsafe = 0
+
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError as exc:
+                skipped_bad_json += 1
+                print(f"Skipping malformed JSONL line {line_number}: {exc}")
+                continue
+
+            if not is_indexable_doc(doc):
+                skipped_unsafe += 1
+                continue
+
+            yield doc
+
+    if skipped_bad_json:
+        print(f"Skipped malformed JSONL records: {skipped_bad_json}")
+    if skipped_unsafe:
+        print(f"Skipped unsafe/draft/non-public records: {skipped_unsafe}")
 
 
 def batched(items: List[str], batch_size: int = EMBED_BATCH_SIZE) -> Iterable[List[str]]:
     for i in range(0, len(items), batch_size):
         yield items[i : i + batch_size]
+
+
+def detect_source_type_from_url(url: str, fallback: str = "webpage") -> str:
+    explicit = str(fallback or "").strip().lower()
+    if explicit in {"blog", "webpage", "magazine", "pdf"}:
+        return "magazine" if explicit == "pdf" else explicit
+
+    u = str(url or "").lower()
+    if "/magazines/" in u or u.endswith(".pdf"):
+        return "magazine"
+    if "/blog/" in u:
+        return "blog"
+    return "webpage"
+
+
+def clean_optional_string(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def normalize_doc(doc: Dict) -> Dict:
@@ -105,12 +212,12 @@ def normalize_doc(doc: Dict) -> Dict:
         "title": doc.get("title", "Untitled"),
         "published_at": doc.get("published_at"),
         "category": doc.get("category"),
-        "source_type": doc.get("source_type", "webpage"),
-        "image": doc.get("image"),
-        "thumbnail": doc.get("thumbnail"),
-        "og_image": doc.get("og_image"),
-        "featured_image": doc.get("featured_image"),
-        "thumbnail_url": doc.get("thumbnail_url") or doc.get("thumbnail"),
+        "source_type": detect_source_type_from_url(doc.get("url", ""), doc.get("source_type", "webpage")),
+        "image": clean_optional_string(doc.get("image")),
+        "thumbnail": clean_optional_string(doc.get("thumbnail")),
+        "og_image": clean_optional_string(doc.get("og_image")),
+        "featured_image": clean_optional_string(doc.get("featured_image")),
+        "thumbnail_url": clean_optional_string(doc.get("thumbnail_url") or doc.get("thumbnail") or doc.get("image")),
         "text": doc.get("text", ""),
         "visibility": visibility,
         "attribution_label": attribution_label,
