@@ -465,6 +465,15 @@ def main() -> None:
 
     print(f"Built LanceDB table '{TABLE_NAME}' with {len(rows)} rows")
 
+    # Re-add magazine/PDF chunks after rebuilding the web/blog table.
+    # build_index.py drops and recreates the LanceDB table above, so without
+    # this call, PDFs already stored in /data/magazines disappear from search.
+    try:
+        magazine_rows = ingest_magazines_after_web_rebuild()
+        print(f"Re-added {magazine_rows} magazine/PDF chunks after web rebuild")
+    except Exception as exc:
+        print(f"Magazine ingest after rebuild failed: {exc}")
+
 
 if __name__ == "__main__":
     main()
