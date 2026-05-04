@@ -55,7 +55,7 @@ app.add_middleware(
 TODAY = date.today()
 DAILY_CRAWL_INTERVAL_SECONDS = 60 * 60 * 24
 STARTUP_CRAWL_DELAY_SECONDS = 30
-ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "true").strip().lower() in {
+ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
 
@@ -1175,6 +1175,10 @@ for _folder in [PDF_INBOX_DIR, PDF_PROCESSING_DIR, PDF_DONE_DIR, PDF_FAILED_DIR]
 
 MAGAZINE_INGEST_STATUS_FILE = Path("/data/magazine_ingest_status.json")
 PDF_INGEST_LOCK_FILE = Path("/data/pdf_ingest.lock")
+PDF_INGEST_SKIP_FILE = Path("/data/pdf_ingest_skip.flag")
+PDF_INGEST_PAUSE_FILE = Path("/data/pdf_ingest_pause.flag")
+PDF_INGEST_DEFAULT_PAUSE_SECONDS = int(os.getenv("PDF_INGEST_PAUSE_SECONDS", "20"))
+CURRENT_PDF_PROCESS: subprocess.Popen | None = None
 
 
 def require_data_disk_space(min_free_gb: float = 1.0) -> None:
@@ -1256,9 +1260,53 @@ def recover_interrupted_processing_files() -> list[dict[str, str]]:
     return recovered
 
 
-def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
-    """Process PDFs from /data/pdf_inbox one at a time. Resume-safe: recovers leftovers first."""
+
+def pdf_ingest_paused() -> bool:
+    return PDF_INGEST_PAUSE_FILE.exists()
+
+
+def pdf_ingest_skip_requested() -> bool:
+    return PDF_INGEST_SKIP_FILE.exists()
+
+
+def clear_pdf_ingest_skip_request() -> None:
+    PDF_INGEST_SKIP_FILE.unlink(missing_ok=True)
+
+
+def wait_for_pdf_ingest_resume(status_payload: dict) -> None:
+    """Hold between files or before a new file when the admin UI has paused ingest."""
+    while pdf_ingest_paused():
+        write_magazine_ingest_status({
+            **status_payload,
+            "status": "paused",
+            "message": "PDF ingest paused. Click Resume PDF Ingest to continue.",
+            "paused": True,
+            "skip_requested": pdf_ingest_skip_requested(),
+        })
+        time.sleep(2)
+
+
+def pause_between_pdfs(seconds: int, status_payload: dict) -> None:
+    """Pause in small ticks so pause/skip controls remain responsive."""
+    for remaining in range(max(0, int(seconds)), 0, -1):
+        wait_for_pdf_ingest_resume(status_payload)
+        write_magazine_ingest_status({
+            **status_payload,
+            "status": "running",
+            "message": f"Pausing {remaining} seconds before next PDF.",
+            "pause_remaining_seconds": remaining,
+            "paused": False,
+            "skip_requested": pdf_ingest_skip_requested(),
+        })
+        time.sleep(1)
+
+
+def run_pdf_inbox_ingest(pause_seconds: int = PDF_INGEST_DEFAULT_PAUSE_SECONDS) -> None:
+    """Process PDFs from /data/pdf_inbox one at a time with admin pause/skip controls."""
+    global CURRENT_PDF_PROCESS
+
     PDF_INGEST_LOCK_FILE.write_text(datetime.utcnow().isoformat())
+    clear_pdf_ingest_skip_request()
     recovered = recover_interrupted_processing_files()
     pdfs = sorted(PDF_INBOX_DIR.glob("*.pdf"))
     total = len(pdfs)
@@ -1274,6 +1322,9 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
             "skipped": [],
             "failed": [],
             "recovered": recovered,
+            "paused": False,
+            "skip_requested": False,
+            "pause_seconds": pause_seconds,
         })
         PDF_INGEST_LOCK_FILE.unlink(missing_ok=True)
         return
@@ -1293,6 +1344,9 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
             "skipped": skipped,
             "failed": failed,
             "recovered": recovered,
+            "paused": False,
+            "skip_requested": False,
+            "pause_seconds": pause_seconds,
         })
 
         for index, inbox_file in enumerate(pdfs, start=1):
@@ -1302,9 +1356,7 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
             failed_file = PDF_FAILED_DIR / filename
             done_marker = PDF_DONE_DIR / f"{filename}.done.txt"
 
-            write_magazine_ingest_status({
-                "status": "running",
-                "message": f"Ingesting {filename} ({index}/{total})",
+            base_status = {
                 "current_file": filename,
                 "processed": index - 1,
                 "total": total,
@@ -1312,6 +1364,18 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                 "skipped": skipped,
                 "failed": failed,
                 "recovered": recovered,
+                "pause_seconds": pause_seconds,
+            }
+
+            wait_for_pdf_ingest_resume(base_status)
+            clear_pdf_ingest_skip_request()
+
+            write_magazine_ingest_status({
+                **base_status,
+                "status": "running",
+                "message": f"Ingesting {filename} ({index}/{total})",
+                "paused": False,
+                "skip_requested": False,
             })
 
             try:
@@ -1326,31 +1390,91 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                     })
                     if processing_file.exists():
                         processing_file.unlink()
-                    done_marker.write_text(f"Skipped duplicate on {datetime.utcnow().isoformat()} UTC. Existing file: {magazine_file}\n")
+                    done_marker.write_text(
+                        f"Skipped duplicate on {datetime.utcnow().isoformat()} UTC. Existing file: {magazine_file}\n"
+                    )
                 else:
                     # Existing ingest script expects the PDF in /data/magazines and receives only filename.
                     shutil.move(str(processing_file), str(magazine_file))
-                    result = subprocess.run(
+                    CURRENT_PDF_PROCESS = subprocess.Popen(
                         ["python", "scripts/ingest_one_magazine.py", filename],
                         cwd=Path(__file__).resolve().parents[1],
-                        capture_output=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                         text=True,
-                        timeout=1800,
                     )
-                    if result.returncode != 0:
+
+                    timed_out = False
+                    skipped_by_editor = False
+                    started_at = time.time()
+                    timeout_seconds = 1800
+
+                    while CURRENT_PDF_PROCESS.poll() is None:
+                        if pdf_ingest_skip_requested():
+                            skipped_by_editor = True
+                            CURRENT_PDF_PROCESS.terminate()
+                            try:
+                                CURRENT_PDF_PROCESS.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                CURRENT_PDF_PROCESS.kill()
+                                CURRENT_PDF_PROCESS.wait(timeout=5)
+                            break
+
+                        if time.time() - started_at > timeout_seconds:
+                            timed_out = True
+                            CURRENT_PDF_PROCESS.kill()
+                            CURRENT_PDF_PROCESS.wait(timeout=5)
+                            break
+
+                        write_magazine_ingest_status({
+                            **base_status,
+                            "status": "running",
+                            "message": f"Ingesting {filename} ({index}/{total}) — {int(time.time() - started_at)} seconds elapsed",
+                            "paused": False,
+                            "skip_requested": False,
+                        })
+                        time.sleep(5)
+
+                    stdout, stderr = CURRENT_PDF_PROCESS.communicate()
+                    returncode = CURRENT_PDF_PROCESS.returncode
+                    CURRENT_PDF_PROCESS = None
+
+                    if skipped_by_editor:
+                        skipped.append({
+                            "file": filename,
+                            "reason": "Skipped by editor from admin console.",
+                            "stdout": (stdout or "")[-1000:],
+                            "stderr": (stderr or "")[-1000:],
+                        })
+                        clear_pdf_ingest_skip_request()
+                        if magazine_file.exists():
+                            shutil.move(str(magazine_file), str(failed_file))
+                    elif timed_out:
                         failed.append({
                             "file": filename,
-                            "returncode": str(result.returncode),
-                            "stdout": result.stdout[-2000:],
-                            "stderr": result.stderr[-2000:],
+                            "error": "Timed out after 1800 seconds.",
+                            "stdout": (stdout or "")[-2000:],
+                            "stderr": (stderr or "")[-2000:],
+                        })
+                        if magazine_file.exists():
+                            shutil.move(str(magazine_file), str(failed_file))
+                    elif returncode != 0:
+                        failed.append({
+                            "file": filename,
+                            "returncode": str(returncode),
+                            "stdout": (stdout or "")[-2000:],
+                            "stderr": (stderr or "")[-2000:],
                         })
                         if magazine_file.exists():
                             shutil.move(str(magazine_file), str(failed_file))
                     else:
                         succeeded.append({"file": filename, "stored_at": str(magazine_file)})
-                        done_marker.write_text(f"Ingested successfully on {datetime.utcnow().isoformat()} UTC. Stored at: {magazine_file}\n")
+                        done_marker.write_text(
+                            f"Ingested successfully on {datetime.utcnow().isoformat()} UTC. Stored at: {magazine_file}\n"
+                        )
 
             except Exception as exc:
+                CURRENT_PDF_PROCESS = None
                 failed.append({"file": filename, "error": str(exc)})
                 try:
                     if processing_file.exists():
@@ -1370,9 +1494,21 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
                 "skipped": skipped,
                 "failed": failed,
                 "recovered": recovered,
+                "paused": False,
+                "skip_requested": False,
+                "pause_seconds": pause_seconds,
             })
             if index < total:
-                time.sleep(pause_seconds)
+                pause_between_pdfs(pause_seconds, {
+                    "current_file": filename,
+                    "processed": index,
+                    "total": total,
+                    "succeeded": succeeded,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "recovered": recovered,
+                    "pause_seconds": pause_seconds,
+                })
 
         final_status = "completed" if not failed else "completed_with_errors"
         write_magazine_ingest_status({
@@ -1385,10 +1521,14 @@ def run_pdf_inbox_ingest(pause_seconds: int = 60) -> None:
             "skipped": skipped,
             "failed": failed,
             "recovered": recovered,
+            "paused": False,
+            "skip_requested": False,
+            "pause_seconds": pause_seconds,
         })
     finally:
+        CURRENT_PDF_PROCESS = None
+        clear_pdf_ingest_skip_request()
         PDF_INGEST_LOCK_FILE.unlink(missing_ok=True)
-
 
 def get_indexed_magazine_filenames() -> set[str]:
     """Return PDF filenames that are already referenced by the live LanceDB index."""
@@ -1513,6 +1653,9 @@ def pdf_inbox_status(_: str = Depends(admin_auth)) -> dict:
         "failed": list_pdf_folder(PDF_FAILED_DIR),
         "status": read_magazine_ingest_status(),
         "lock_exists": PDF_INGEST_LOCK_FILE.exists(),
+        "paused": PDF_INGEST_PAUSE_FILE.exists(),
+        "skip_requested": PDF_INGEST_SKIP_FILE.exists(),
+        "pause_seconds": PDF_INGEST_DEFAULT_PAUSE_SECONDS,
     }
 
 
@@ -1541,7 +1684,7 @@ async def ingest_pdf_inbox(background_tasks: BackgroundTasks, _: str = Depends(a
         return {"ok": True, "message": "No PDFs waiting in /data/pdf_inbox."}
 
     require_data_disk_space(1.0)
-    background_tasks.add_task(run_pdf_inbox_ingest, 60)
+    background_tasks.add_task(run_pdf_inbox_ingest, PDF_INGEST_DEFAULT_PAUSE_SECONDS)
     write_magazine_ingest_status({
         "status": "running",
         "message": f"Controlled ingest queued for {pdf_count} PDF(s).",
@@ -1555,8 +1698,26 @@ async def ingest_pdf_inbox(background_tasks: BackgroundTasks, _: str = Depends(a
     })
     return {
         "ok": True,
-        "message": f"Controlled ingest started for {pdf_count} PDF(s). Files will process one at a time with a pause between PDFs.",
+        "message": f"Controlled ingest started for {pdf_count} PDF(s). Files will process one at a time with a 20-second pause between PDFs.",
     }
+
+
+@app.post("/admin/pause-pdf-ingest")
+def pause_pdf_ingest(_: str = Depends(admin_auth)) -> dict:
+    PDF_INGEST_PAUSE_FILE.write_text(datetime.utcnow().isoformat())
+    return {"ok": True, "message": "PDF ingest pause requested. It will pause between files."}
+
+
+@app.post("/admin/resume-pdf-ingest")
+def resume_pdf_ingest(_: str = Depends(admin_auth)) -> dict:
+    PDF_INGEST_PAUSE_FILE.unlink(missing_ok=True)
+    return {"ok": True, "message": "PDF ingest resumed."}
+
+
+@app.post("/admin/skip-current-pdf")
+def skip_current_pdf(_: str = Depends(admin_auth)) -> dict:
+    PDF_INGEST_SKIP_FILE.write_text(datetime.utcnow().isoformat())
+    return {"ok": True, "message": "Skip requested for the current PDF."}
 
 
 @app.get("/admin/magazine-ingest-status")
