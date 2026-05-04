@@ -254,17 +254,55 @@ def pdf_issue_from_filename(filename: str) -> str:
     return stem
 
 
+def expanded_issue_label(filename: str) -> str:
+    """Create a search-friendly issue label with expanded month names.
+
+    Example:
+    '024 Green Builder Sep-Oct 2020.pdf' ->
+    'Green Builder Magazine September October 2020 Sep Oct 2020 024 Green Builder Sep-Oct 2020.pdf'
+    """
+    issue = pdf_issue_from_filename(filename)
+    year = pdf_year_from_filename(filename)
+    label = f"Green Builder Magazine {issue}".strip()
+
+    month_map = {
+        "jan": "January", "feb": "February", "mar": "March",
+        "apr": "April", "may": "May", "jun": "June",
+        "jul": "July", "aug": "August", "sep": "September",
+        "sept": "September", "oct": "October", "nov": "November",
+        "dec": "December",
+    }
+
+    expanded_parts: list[str] = []
+    for token in re.split(r"[^A-Za-z]+", issue):
+        key = token.lower().strip()
+        if key in month_map:
+            expanded_parts.append(month_map[key])
+
+    pieces = [label]
+    if expanded_parts:
+        pieces.append(" ".join(expanded_parts))
+    if year:
+        pieces.append(year)
+    pieces.append(filename)
+
+    return " | ".join(dict.fromkeys([p for p in pieces if p]))
+
+
+def safe_cover_stem(filename: str) -> str:
+    """Create a URL-safe cover filename that StaticFiles can serve reliably."""
+    stem = Path(filename or "magazine").stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-")
+    return stem or "magazine"
+
+
 def public_cover_path_for_pdf(filename: str) -> str:
     """Return the public cover URL used by main.py/card UI for this PDF."""
-    encoded = quote(filename)
-    stem = Path(encoded).stem
-    return f"/assets/covers/{stem}.jpg"
+    return f"/assets/covers/{safe_cover_stem(filename)}.jpg"
 
 
 def local_cover_path_for_pdf(filename: str) -> Path:
-    encoded = quote(filename)
-    stem = Path(encoded).stem
-    return COVERS_DIR / f"{stem}.jpg"
+    return COVERS_DIR / f"{safe_cover_stem(filename)}.jpg"
 
 
 def generate_pdf_cover(pdf_path: Path) -> str:
@@ -561,18 +599,33 @@ def ingest_one(filename: str) -> int:
         if not pending_texts:
             return 0
 
-        # Embed the clean text used for retrieval. Row-level embed_text is also stored when supported.
-        texts = [x[3] for x in pending_texts]
+        # Embed strong issue-aware text so queries like "Sept Oct 2020 issue"
+        # directly match the correct PDF, not only whatever article text appears
+        # on an individual page.
+        enhanced_items: list[tuple[int, int, int, str, str]] = []
+        issue_label = expanded_issue_label(pdf_path.name)
+        for page_num, chunk_index, chunk_count, text in pending_texts:
+            enhanced_text = (
+                f"{issue_label}\n"
+                f"Issue: {pdf_issue}\n"
+                f"Year: {pdf_year}\n"
+                f"File: {pdf_path.name}\n"
+                f"Page: {page_num}\n\n"
+                f"{text}"
+            ).strip()
+            enhanced_items.append((page_num, chunk_index, chunk_count, text, enhanced_text))
+
+        texts = [x[4] for x in enhanced_items]
         vectors = embed_batch(texts)
 
-        for (page_num, chunk_index, chunk_count, text), vector in zip(pending_texts, vectors):
+        for (page_num, chunk_index, chunk_count, original_text, enhanced_text), vector in zip(enhanced_items, vectors):
             title = f"{source_title} (PDF, p. {page_num})"
             row = {
-                "id": row_id(pdf_path.name, page_num, chunk_index, text),
+                "id": row_id(pdf_path.name, page_num, chunk_index, enhanced_text),
                 "title": title,
                 "url": pdf_url,
-                "text": text,
-                "embed_text": f"Title: {title}\nSource: Green Builder Magazine PDF\nIssue: {pdf_issue}\nYear: {pdf_year}\nFile: {pdf_path.name}\nPage: {page_num}\nText: {text}",
+                "text": enhanced_text,
+                "embed_text": enhanced_text,
                 "page": page_num,
                 "published_at": pdf_year or "",
                 "category": "Magazine archive",
@@ -590,7 +643,7 @@ def ingest_one(filename: str) -> int:
                 "thumbnail_url": cover_url,
                 "chunk_index": chunk_index - 1,
                 "chunk_count": chunk_count,
-                "relevance_hint": relevance_hint(text),
+                "relevance_hint": relevance_hint(original_text),
                 "stale": False,
                 "stale_reasons": [],
                 "governance_note": None,
