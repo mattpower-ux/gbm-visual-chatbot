@@ -38,11 +38,18 @@ HTML = r"""
     .file-col h4 { margin: 0 0 6px; font-size: 14px; }
     .file-item { border-top: 1px solid #e2e8f0; padding: 6px 0; font-size: 12px; overflow-wrap: anywhere; }
     .disk-line { margin-top: 8px; font-size: 12px; color: #475569; }
+    .ingest-panel { margin-top: 10px; padding: 10px; border: 1px solid #99f6e4; border-radius: 12px; background: #ffffff; }
+    .ingest-grid { display: grid; gap: 8px; grid-template-columns: repeat(4, 1fr); margin-top: 8px; }
+    .ingest-stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px; }
+    .ingest-stat strong { display: block; font-size: 12px; color: #475569; margin-bottom: 4px; }
+    .danger-btn { background: #b91c1c; }
+    .pause-btn { background: #ca8a04; }
+    .resume-btn { background: #15803d; }
     .thumb-preview { margin-top: 10px; max-width: 100%; border: 1px solid #cbd5e1; border-radius: 10px; overflow: hidden; background: #f8fafc; display: none; }
     .thumb-preview img { width: 100%; max-height: 180px; object-fit: cover; display: block; }
 
     /* Keep controls within the first screen: scroll long file lists and answer logs. */
-    .upload-box { max-height: 360px; overflow-y: auto; }
+    .upload-box { max-height: none; overflow-y: visible; }
     .file-col { max-height: 220px; overflow-y: auto; }
     .logs-card { max-height: 640px; min-height: 520px; display: flex; flex-direction: column; overflow: hidden; }
     .controls-card { max-height: 640px; min-height: 520px; overflow-y: auto; }
@@ -58,8 +65,8 @@ HTML = r"""
     .source-actions { margin-top: 7px; display: flex; gap: 8px; flex-wrap: wrap; }
     .small-btn { padding: 6px 9px; border-radius: 8px; font-size: 12px; font-weight: 700; }
     .small-btn.secondary { background: #e2e8f0; color: #0f172a; }
-    @media (max-width: 900px) { .file-dashboard { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 560px) { .file-dashboard { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) { .file-dashboard, .ingest-grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 560px) { .file-dashboard, .ingest-grid { grid-template-columns: 1fr; } }
     @media (max-width: 760px) {
       header { align-items: flex-start; flex-direction: column; }
       .grid { grid-template-columns: 1fr; }
@@ -88,10 +95,24 @@ HTML = r"""
       <input type="file" id="magazine-file" accept="application/pdf" multiple />
       <button id="upload-magazine-btn">Upload PDF</button>
       <button id="ingest-pdf-inbox-btn" type="button">Ingest PDFs</button>
+      <button id="pause-pdf-ingest-btn" class="pause-btn" type="button">Pause</button>
+      <button id="resume-pdf-ingest-btn" class="resume-btn" type="button">Resume</button>
+      <button id="skip-current-pdf-btn" class="danger-btn" type="button">Skip Current PDF</button>
       <button id="check-ingest-status-btn" type="button">Check Ingest Status</button>
     </div>
     <div id="upload-status">No file uploaded yet. Safe upload mode is ON.</div>
     <div class="progress-wrap" aria-label="PDF ingest progress"><div id="ingest-progress-bar" class="progress-bar"></div></div>
+    <div class="ingest-panel">
+      <strong>PDF ingest monitor</strong>
+      <div class="muted">Controlled mode: one PDF at a time, 20-second pause between files. Use Skip Current PDF if one hangs.</div>
+      <div class="ingest-grid">
+        <div class="ingest-stat"><strong>Status</strong><span id="ingest-status-label">idle</span></div>
+        <div class="ingest-stat"><strong>Current PDF</strong><span id="ingest-current-file">None</span></div>
+        <div class="ingest-stat"><strong>Progress</strong><span id="ingest-progress-label">0 / 0</span></div>
+        <div class="ingest-stat"><strong>Pause</strong><span id="ingest-pause-label">20 sec between files</span></div>
+      </div>
+      <div id="ingest-summary" class="muted" style="margin-top:8px">Completed: 0 · Skipped: 0 · Failed: 0</div>
+    </div>
     <div id="disk-status" class="disk-line">Disk status not checked yet.</div>
     <div style="margin-top:10px; padding:10px; border:1px solid #fde68a; border-radius:10px; background:#fffbeb;">
       <strong>Clean unused PDFs</strong>
@@ -230,7 +251,7 @@ function sourceCardHtml(src) {
     <div class="source-card">
       <img class="source-thumb"
         src="${escapeHtml(overrideThumb)}?v=${Date.now()}"
-        onerror="this.onerror=null;const real='${escapedImage}';this.src=(real && real.startsWith('http')) ? real : '${fallbackThumb}';"
+        onerror="this.onerror=null;const real='${escapedImage}';this.src=(real && (real.startsWith('http') || real.startsWith('/'))) ? real : '${fallbackThumb}';"
         alt="Source thumbnail" />
       <div>
         <div class="source-title">
@@ -426,6 +447,38 @@ function updateProgressBar(status) {
   bar.style.width = pct + "%";
 }
 
+function updateIngestMonitor(status) {
+  const statusLabel = document.getElementById("ingest-status-label");
+  const currentFile = document.getElementById("ingest-current-file");
+  const progressLabel = document.getElementById("ingest-progress-label");
+  const pauseLabel = document.getElementById("ingest-pause-label");
+  const summary = document.getElementById("ingest-summary");
+
+  if (!statusLabel || !currentFile || !progressLabel || !pauseLabel || !summary) return;
+
+  const processed = Number(status?.processed || 0);
+  const total = Number(status?.total || 0);
+  const succeeded = Array.isArray(status?.succeeded) ? status.succeeded.length : 0;
+  const skipped = Array.isArray(status?.skipped) ? status.skipped.length : 0;
+  const failed = Array.isArray(status?.failed) ? status.failed.length : 0;
+  const pauseSeconds = Number(status?.pause_seconds || 20);
+  const remaining = Number(status?.pause_remaining_seconds || 0);
+
+  statusLabel.textContent = status?.status || "idle";
+  currentFile.textContent = status?.current_file || "None";
+  progressLabel.textContent = `${processed} / ${total}`;
+
+  if (status?.paused) {
+    pauseLabel.textContent = "Paused";
+  } else if (remaining > 0) {
+    pauseLabel.textContent = `${remaining} sec until next PDF`;
+  } else {
+    pauseLabel.textContent = `${pauseSeconds} sec between files`;
+  }
+
+  summary.textContent = `Completed: ${succeeded} · Skipped: ${skipped} · Failed: ${failed}`;
+}
+
 async function refreshPDFDashboard() {
   try {
     const res = await fetch("/admin/pdf-inbox-status", {
@@ -445,6 +498,7 @@ async function refreshPDFDashboard() {
     }
 
     updateProgressBar(data.status || {});
+    updateIngestMonitor(data.status || data || {});
   } catch (err) {
     document.getElementById("disk-status").textContent = "Error loading PDF dashboard: " + err.message;
   }
@@ -546,9 +600,12 @@ async function checkMagazineIngestStatus() {
 
     const data = await res.json();
     updateProgressBar(data || {});
+    updateIngestMonitor(data || {});
 
     if (data.status === "running") {
       statusEl.textContent = `${data.message || "Ingest running"} — ${data.processed || 0}/${data.total || 0} processed`;
+    } else if (data.status === "paused") {
+      statusEl.textContent = data.message || "Magazine ingest paused.";
     } else if (data.status === "completed") {
       statusEl.textContent = data.message || "Magazine ingest completed.";
     } else if (data.status === "completed_with_errors") {
@@ -574,7 +631,35 @@ function pollMagazineIngestStatus() {
     ) {
       clearInterval(interval);
     }
-  }, 10000);
+  }, 5000);
+}
+
+async function postIngestControl(url, workingText) {
+  const statusEl = document.getElementById("upload-status");
+  statusEl.textContent = workingText;
+  try {
+    const { res, data } = await fetchJson(url, { method: "POST" });
+    statusEl.textContent = data.message || "Control request sent.";
+    await checkMagazineIngestStatus();
+    await refreshPDFDashboard();
+  } catch (err) {
+    statusEl.textContent = "Control error: " + err.message;
+  }
+}
+
+async function pausePDFIngest() {
+  await postIngestControl("/admin/pause-pdf-ingest", "Pausing PDF ingest after current step...");
+}
+
+async function resumePDFIngest() {
+  await postIngestControl("/admin/resume-pdf-ingest", "Resuming PDF ingest...");
+  pollMagazineIngestStatus();
+}
+
+async function skipCurrentPDF() {
+  const ok = window.confirm("Skip the current PDF and move it out of the active ingest path?");
+  if (!ok) return;
+  await postIngestControl("/admin/skip-current-pdf", "Requesting skip for current PDF...");
 }
 
 async function previewUnusedPDFs() {
@@ -736,6 +821,9 @@ bindClick('saveBtn', async () => {
 
 bindClick("upload-magazine-btn", uploadMagazinePDF);
 bindClick("ingest-pdf-inbox-btn", ingestPDFInbox);
+bindClick("pause-pdf-ingest-btn", pausePDFIngest);
+bindClick("resume-pdf-ingest-btn", resumePDFIngest);
+bindClick("skip-current-pdf-btn", skipCurrentPDF);
 bindClick("check-ingest-status-btn", checkMagazineIngestStatus);
 bindClick("preview-unused-pdfs-btn", previewUnusedPDFs);
 bindClick("clean-unused-pdfs-btn", cleanUnusedPDFs);
