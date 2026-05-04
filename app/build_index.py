@@ -23,6 +23,7 @@ EMBED_BASE_SLEEP_SECONDS = 5.0
 EMBED_BETWEEN_BATCH_SLEEP_SECONDS = 1.0
 AUTO_INGEST_MAGAZINES_AFTER_REBUILD = os.getenv("AUTO_INGEST_MAGAZINES_AFTER_REBUILD", "true").strip().lower() in {"1", "true", "yes", "on"}
 MAGAZINE_DIR = Path(os.getenv("MAGAZINE_DIR", "/data/magazines"))
+AUTO_INGEST_MAGAZINE_PAUSE_SECONDS = int(os.getenv("AUTO_INGEST_MAGAZINE_PAUSE_SECONDS", "20"))
 
 
 def normalize_whitespace(text: str) -> str:
@@ -320,13 +321,17 @@ def ingest_magazines_after_web_rebuild() -> int:
         return 0
 
     total_added = 0
-    print(f"Adding {len(pdfs)} magazine PDF(s) to rebuilt index...")
-    for pdf in pdfs:
+    print(f"Adding {len(pdfs)} magazine PDF(s) to rebuilt index with {AUTO_INGEST_MAGAZINE_PAUSE_SECONDS}s pause between PDFs...")
+    for index, pdf in enumerate(pdfs, start=1):
         try:
+            print(f"Re-adding magazine PDF {index}/{len(pdfs)}: {pdf.name}")
             added = ingest_one(pdf.name)
             total_added += int(added or 0)
         except Exception as exc:
             print(f"Magazine ingest failed for {pdf.name}: {exc}")
+
+        if index < len(pdfs) and AUTO_INGEST_MAGAZINE_PAUSE_SECONDS > 0:
+            time.sleep(AUTO_INGEST_MAGAZINE_PAUSE_SECONDS)
 
     return total_added
 
