@@ -836,7 +836,7 @@ def _build_key_insights(answer: str) -> list[dict[str, str]]:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     insights: list[dict[str, str]] = []
 
-    titles = ["Main takeaway", "Practical implication", "Tradeoff to consider"]
+    titles = ["Key Insights", "Practical implication", "Related Facts"]
     icons = ["lightbulb", "check-circle", "scale"]
 
     for idx, paragraph in enumerate(paragraphs[:3]):
