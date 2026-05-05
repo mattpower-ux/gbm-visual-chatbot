@@ -103,6 +103,21 @@
       border-radius: 12px;
       padding: 12px;
       font-size: 13px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .gbm-insight-icon {
+      font-size: 18px;
+      line-height: 1.2;
+      flex: 0 0 auto;
+      margin-top: 1px;
+    }
+
+    .gbm-insight-copy {
+      flex: 1;
+      min-width: 0;
     }
 
     .gbm-section-title {
@@ -253,14 +268,28 @@
     const insights = data.key_insights || [];
     if (!insights.length) return "";
 
+    const iconMap = {
+      "lightbulb": "💡",
+      "tools": "🛠️",
+      "info": "ℹ️",
+      "check-circle": "✔️",
+      "scale": "⚖️"
+    };
+
     return `
       <div class="gbm-insights">
-        ${insights.slice(0,3).map(i => `
-          <div class="gbm-insight">
-            <strong>${escapeHtml(i.title || "Insight")}</strong><br>
-            ${escapeHtml(i.text || "")}
-          </div>
-        `).join("")}
+        ${insights.slice(0,3).map(i => {
+          const icon = iconMap[i.icon] || "";
+          return `
+            <div class="gbm-insight">
+              ${icon ? `<span class="gbm-insight-icon" aria-hidden="true">${icon}</span>` : ""}
+              <div class="gbm-insight-copy">
+                <strong>${escapeHtml(i.title || "Insight")}</strong><br>
+                ${escapeHtml(i.text || "")}
+              </div>
+            </div>
+          `;
+        }).join("")}
       </div>
     `;
   }
