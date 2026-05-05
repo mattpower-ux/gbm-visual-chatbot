@@ -837,7 +837,7 @@ def _build_key_insights(answer: str) -> list[dict[str, str]]:
     insights: list[dict[str, str]] = []
 
     titles = ["Key Insights", "Practical implication", "Related Facts"]
-    icons = ["lightbulb", "check-circle", "scale"]
+    icons = ["lightbulb", "check-circle", "info"]
 
     for idx, paragraph in enumerate(paragraphs[:3]):
         short = paragraph
@@ -847,7 +847,7 @@ def _build_key_insights(answer: str) -> list[dict[str, str]]:
         insights.append({"title": titles[idx], "text": short, "icon": icons[idx]})
 
     if not insights and text:
-        insights.append({"title": "Main takeaway", "text": _first_paragraph(text), "icon": "lightbulb"})
+        insights.append({"title": "Key Insights", "text": _first_paragraph(text), "icon": "lightbulb"})
 
     return insights
 
