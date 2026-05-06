@@ -930,10 +930,6 @@
 
       </div>
 
-      <div class="gbm-toggle">
-        DIVE DEEPER WITH TEXT ONLY
-      </div>
-
       ${renderInsights(payload)}
 
       <div class="gbm-section-title">
