@@ -1061,6 +1061,71 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
 
 
 
+def search_magazine_pdf_cards(question: str, limit: int = 2) -> list[dict[str, Any]]:
+    """Run a separate retrieval pass to surface relevant magazine/PDF cards for the UI.
+
+    This does not change answer generation. It only ensures the visual UI can
+    show magazine/PDF resources even when blogs or webpages dominate the main
+    answer context.
+    """
+    if not question:
+        return []
+
+    try:
+        more_chunks = search(question)
+        more_chunks = _apply_smart_ranking(more_chunks, question)
+    except Exception as exc:
+        print(f"PDF card search failed: {exc}")
+        return []
+
+    pdf_cards: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for chunk in more_chunks or []:
+        if not _is_magazine_chunk(chunk):
+            continue
+
+        url = str(chunk.get("url", "") or "").strip()
+        filename = str(chunk.get("pdf_filename", "") or "").strip()
+
+        if not url and filename:
+            url = f"/magazines/{filename}"
+
+        if not url or url in seen_urls:
+            continue
+
+        seen_urls.add(url)
+
+        title = (
+            chunk.get("source_name")
+            or chunk.get("title")
+            or chunk.get("pdf_filename")
+            or "Green Builder Magazine Archive"
+        )
+
+        cover = _magazine_cover_for_url(url, chunk)
+
+        pdf_cards.append(
+            {
+                "title": str(title),
+                "url": url,
+                "cover": cover,
+                "image": cover,
+                "thumbnail_url": cover,
+                "issue": chunk.get("source_name") or "Magazine archive",
+                "page": chunk.get("page"),
+                "type": "pdf",
+                "source": "Green Builder Magazine",
+                "excerpt": str(chunk.get("text", ""))[:240].strip(),
+            }
+        )
+
+        if len(pdf_cards) >= limit:
+            break
+
+    return pdf_cards
+
+
 def _build_key_insights(answer: str) -> list[dict[str, str]]:
     """Create lightweight insight cards from the generated answer."""
     text = answer or ""
@@ -1090,6 +1155,19 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
     answer = base.get("answer", "") or ""
     sources = base.get("sources", []) or []
     cards, magazines = _build_visual_cards(sources, chunks)
+
+    # Force a separate PDF/magazine card pass for the visual UI.
+    # This prevents broad queries from losing PDF cards when articles dominate
+    # the main answer/source ranking.
+    extra_magazines = search_magazine_pdf_cards(question, limit=2) if question else []
+    magazine_urls = {str(m.get("url", "")) for m in magazines}
+    for magazine in extra_magazines:
+        url = str(magazine.get("url", ""))
+        if url and url not in magazine_urls:
+            magazines.append(magazine)
+            magazine_urls.add(url)
+
+    magazines = magazines[:2]
     videos = search_youtube_videos(question, limit=2) if question else []
 
     base.update(
@@ -1408,6 +1486,17 @@ def admin_youtube_status(_: str = Depends(admin_auth)) -> dict:
         "cache_file": str(YOUTUBE_CACHE_FILE),
         "video_count": len(videos),
         "sample": videos[:3],
+    }
+
+
+@app.get("/api/admin/test-pdf-cards")
+def admin_test_pdf_cards(q: str = "home electrification", _: str = Depends(admin_auth)) -> dict:
+    cards = search_magazine_pdf_cards(q, limit=10)
+    return {
+        "ok": True,
+        "query": q,
+        "pdf_card_count": len(cards),
+        "pdf_cards": cards,
     }
 
 
