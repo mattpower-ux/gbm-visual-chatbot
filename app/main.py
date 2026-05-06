@@ -1845,7 +1845,7 @@ ASSETS_DIR = Path("/data/assets")
 # === Backup Download Endpoint ===
 @app.get("/download-backup")
 async def download_backup():
-    backup_path = Path("/home/render/project/src/gbm-full-backup.tar.gz")
+    backup_path = Path("/data/gbm-full-backup.tar.gz")
 
     if not backup_path.exists():
         return {"error": "Backup file not found"}
