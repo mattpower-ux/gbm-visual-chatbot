@@ -13,6 +13,12 @@
     currentScript?.dataset.chatbotTitle ||
     "GBM Deep Think";
 
+  const GBM_YOUTUBE_CHANNEL =
+    "https://www.youtube.com/user/greenbuildermedia";
+
+  const GBM_PODCAST_PLAYLIST =
+    "https://youtube.com/playlist?list=PLwQAcwOzaQyfAMZ7xA2Mz2acdLVauKFlV&si=vTbLmV5EuNhVcZy-";
+
   const root = document.createElement("div");
   document.body.appendChild(root);
 
@@ -22,6 +28,7 @@
   function abs(url) {
     if (!url) return "";
     if (url.startsWith("http")) return url;
+    if (url.startsWith("#")) return url;
     return API_BASE + url;
   }
 
@@ -62,6 +69,7 @@
           <circle cx="12" cy="11" r="3"/>
           <path d="M6 11a6 6 0 0 1 12 0"/>
           <path d="M12 14v7"/>
+          <path d="M9.5 21h5"/>
         </svg>
       `,
       insight: `
@@ -82,12 +90,6 @@
           <circle cx="12" cy="12" r="9"/>
           <path d="M12 10v6"/>
           <path d="M12 7h.01"/>
-        </svg>
-      `,
-      send: `
-        <svg viewBox="0 0 24 24">
-          <path d="M22 2L11 13"/>
-          <path d="M22 2l-7 20-4-9-9-4z"/>
         </svg>
       `,
       close: `
@@ -112,16 +114,21 @@
       background: #007565;
       color: white;
       border-radius: 999px;
-      padding: 14px 20px;
+      padding: 14px 22px;
       font-family: Arial, sans-serif;
-      font-weight: 800;
+      font-weight: 900;
+      letter-spacing: .04em;
       cursor: pointer;
       box-shadow: 0 10px 30px rgba(0,0,0,.25);
     }
 
     .gbm-panel {
       position: fixed;
-      inset: 24px;
+      top: 24px;
+      bottom: 24px;
+      right: 24px;
+      left: auto;
+      width: min(950px, calc(100vw - 80px));
       z-index: 999998;
       background: #f5f8f7;
       border-radius: 18px;
@@ -141,6 +148,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex: 0 0 auto;
     }
 
     .gbm-header-left {
@@ -150,14 +158,16 @@
     }
 
     .gbm-mark {
-      width: 34px;
-      height: 34px;
+      width: 38px;
+      height: 38px;
       border-radius: 50%;
       background: rgba(255,255,255,.18);
       display: flex;
       align-items: center;
       justify-content: center;
       font-weight: 900;
+      font-size: 12px;
+      letter-spacing: .02em;
     }
 
     .gbm-title {
@@ -179,7 +189,6 @@
     }
 
     .gbm-close svg,
-    .gbm-send svg,
     .gbm-icon svg {
       width: 18px;
       height: 18px;
@@ -236,6 +245,8 @@
       align-items: center;
       justify-content: center;
       font-weight: 900;
+      font-size: 12px;
+      letter-spacing: .02em;
       flex: 0 0 auto;
     }
 
@@ -291,6 +302,7 @@
       border: 1px solid #dce5e2;
       padding: 14px;
       box-shadow: 0 8px 24px rgba(0,0,0,.04);
+      min-width: 0;
     }
 
     .gbm-column-header {
@@ -300,6 +312,7 @@
       margin-bottom: 12px;
       font-weight: 900;
       color: #163d35;
+      font-size: 14px;
     }
 
     .gbm-icon {
@@ -445,6 +458,7 @@
       padding: 16px;
       display: flex;
       gap: 10px;
+      flex: 0 0 auto;
     }
 
     .gbm-input {
@@ -457,16 +471,20 @@
     }
 
     .gbm-send {
-      width: 48px;
+      width: auto;
+      min-width: 86px;
       height: 48px;
-      border-radius: 50%;
+      border-radius: 999px;
       border: 0;
       background: #007565;
       color: white;
       cursor: pointer;
+      font-weight: 900;
+      letter-spacing: .04em;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 0 18px;
     }
 
     .gbm-player {
@@ -476,6 +494,17 @@
       border-radius: 10px;
       overflow: hidden;
       margin-bottom: 10px;
+      background: #111;
+    }
+
+    .gbm-empty-card {
+      color: #66736f;
+      font-size: 12px;
+      line-height: 1.45;
+      background: #f8fbfa;
+      border-radius: 12px;
+      padding: 12px;
+      border: 1px dashed #dce5e2;
     }
 
     @media (max-width: 1100px) {
@@ -489,6 +518,7 @@
 
       .gbm-panel {
         inset: 0;
+        width: auto;
         border-radius: 0;
       }
 
@@ -513,17 +543,17 @@
 
   </style>
 
-  <div class="gbm-launcher">Chat with GBM</div>
+  <div class="gbm-launcher">GBM DEEP THINK</div>
 
   <div class="gbm-panel">
 
     <div class="gbm-header">
       <div class="gbm-header-left">
-        <div class="gbm-mark">gb</div>
+        <div class="gbm-mark">GBM</div>
         <div class="gbm-title">${esc(CHATBOT_TITLE)}</div>
       </div>
 
-      <button class="gbm-close">
+      <button class="gbm-close" aria-label="Close chatbot">
         ${icon("close")}
       </button>
     </div>
@@ -545,7 +575,7 @@
       />
 
       <button class="gbm-send">
-        ${icon("send")}
+        SEND
       </button>
     </div>
 
@@ -579,16 +609,13 @@
   }
 
   function renderInsights(data) {
-
     const insights = data.key_insights || [];
-
     if (!insights.length) return "";
 
     return `
       <div class="gbm-insights">
 
         ${insights.slice(0,3).map((item, idx) => {
-
           const iconName =
             idx === 0 ? "insight" :
             idx === 1 ? "check" :
@@ -608,7 +635,6 @@
 
             </div>
           `;
-
         }).join("")}
 
       </div>
@@ -616,22 +642,69 @@
   }
 
   function youtubeId(url) {
-
     if (!url) return "";
 
-    const watch = url.match(/[?&]v=([^&]+)/);
+    const watch = String(url).match(/[?&]v=([^&]+)/);
     if (watch) return watch[1];
 
-    const short = url.match(/youtu\.be\/([^?&]+)/);
-                                     
+    const short = String(url).match(/youtu\.be\/([^?&]+)/);
     if (short) return short[1];
+
+    const embed = String(url).match(/embed\/([^?&/]+)/);
+    if (embed) return embed[1];
 
     return "";
   }
 
-  function renderColumn(title, type, items) {
+  function isPdfCard(card) {
+    const t = String(card.type || card.source_type || "").toLowerCase();
+    const u = String(card.url || "").toLowerCase();
+    return (
+      t === "pdf" ||
+      t === "magazine" ||
+      u.includes(".pdf") ||
+      u.includes("/magazines/")
+    );
+  }
 
-    const visible = (items || []).slice(0,2);
+  function isVideoCard(card) {
+    const t = String(card.type || card.source_type || "").toLowerCase();
+    const u = String(card.url || "").toLowerCase();
+    return (
+      t === "video" ||
+      t === "youtube" ||
+      u.includes("youtube.com/watch") ||
+      u.includes("youtu.be/")
+    );
+  }
+
+  function isPodcastCard(card) {
+    const t = String(card.type || card.source_type || "").toLowerCase();
+    const u = String(card.url || "").toLowerCase();
+    const title = String(card.title || "").toLowerCase();
+    return (
+      t === "podcast" ||
+      u.includes("playlist?list=plwqacwozaqyfamz7xa2mz2acdlvaukflv") ||
+      title.includes("podcast")
+    );
+  }
+
+  function dedupeByUrl(items) {
+    const seen = new Set();
+    const out = [];
+
+    (items || []).forEach(item => {
+      const key = String(item.url || item.title || "").trim();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(item);
+    });
+
+    return out;
+  }
+
+  function renderColumn(title, type, items, emptyText) {
+    const visible = dedupeByUrl(items || []).slice(0,2);
 
     return `
       <div class="gbm-column">
@@ -650,69 +723,9 @@
 
         </div>
 
-        ${visible.length ? visible.map(item => {
-
-          const isVideo = type === "video";
-          const yid = isVideo ? youtubeId(item.url) : "";
-
-          const img =
-            item.image ||
-            item.thumbnail ||
-            item.cover ||
-            (yid
-              ? "https://img.youtube.com/vi/" + yid + "/hqdefault.jpg"
-              : "/assets/thumbs/fallback-article.jpg");
-
-          return `
-            <div class="gbm-card">
-
-              ${
-                isVideo && yid
-                  ? `
-                    <iframe
-                      class="gbm-player"
-                      src="https://www.youtube.com/embed/${yid}"
-                      allowfullscreen
-                    ></iframe>
-                  `
-                  : `
-                    <img
-                      class="gbm-thumb"
-                      src="${abs(img)}"
-                    />
-                  `
-              }
-
-              <div class="gbm-card-title">
-                ${esc(item.title || "Untitled")}
-              </div>
-
-              <div class="gbm-card-meta">
-                ${esc(item.source || "Green Builder Media")}
-              </div>
-
-              <a
-                class="gbm-button"
-                href="${abs(item.url || "#")}"
-                target="_blank"
-              >
-                ${
-                  type === "video"
-                    ? "Watch on YouTube ↗"
-                    : type === "podcast"
-                    ? "Listen ↗"
-                    : type === "pdf"
-                    ? "View PDF ↗"
-                    : "Read Article ↗"
-                }
-              </a>
-
-            </div>
-          `;
-
-        }).join("") : `
-          <div class="gbm-card-meta">
-            No related content found.
+        ${visible.length ? visible.map(item => renderCard(type, item)).join("") : `
+          <div class="gbm-empty-card">
+            ${esc(emptyText || "No related content found yet.")}
           </div>
         `}
 
@@ -720,9 +733,91 @@
     `;
   }
 
-  function renderRecommended(cards) {
+  function renderCard(type, item) {
+    const isVideo = type === "video" || type === "podcast";
+    const yid = isVideo ? youtubeId(item.url || item.source_url || "") : "";
 
-    if (!cards?.length) return "";
+    const fallback =
+      type === "pdf"
+        ? "/assets/covers/fallback-magazine.jpg"
+        : "/assets/thumbs/fallback-article.jpg";
+
+    const img =
+      item.image ||
+      item.thumbnail ||
+      item.thumbnail_url ||
+      item.cover ||
+      item.remote_image ||
+      (yid
+        ? "https://img.youtube.com/vi/" + yid + "/hqdefault.jpg"
+        : fallback);
+
+    const source =
+      item.source ||
+      item.issue ||
+      item.category ||
+      item.attribution_label ||
+      (type === "podcast"
+        ? "Green Builder Media Network"
+        : type === "video"
+        ? "Green Builder Media YouTube"
+        : "Green Builder Media");
+
+    const url = item.url || item.source_url || "#";
+
+    return `
+      <div class="gbm-card">
+
+        ${
+          isVideo && yid
+            ? `
+              <iframe
+                class="gbm-player"
+                src="https://www.youtube.com/embed/${esc(yid)}"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowfullscreen
+              ></iframe>
+            `
+            : `
+              <img
+                class="gbm-thumb"
+                src="${abs(img)}"
+                onerror="this.onerror=null;this.src='${abs(fallback)}';"
+              />
+            `
+        }
+
+        <div class="gbm-card-title">
+          ${esc(item.title || "Untitled")}
+        </div>
+
+        <div class="gbm-card-meta">
+          ${esc(source)}${item.page ? " · p. " + esc(item.page) : ""}
+        </div>
+
+        <a
+          class="gbm-button"
+          href="${abs(url)}"
+          target="_blank"
+          rel="noopener"
+        >
+          ${
+            type === "video"
+              ? "Watch on YouTube ↗"
+              : type === "podcast"
+              ? "Listen / Watch ↗"
+              : type === "pdf"
+              ? "View PDF ↗"
+              : "Read Article ↗"
+          }
+        </a>
+
+      </div>
+    `;
+  }
+
+  function renderRecommended(cards) {
+    if (!cards || !cards.length) return "";
 
     return `
       <div class="gbm-section-title">
@@ -732,10 +827,10 @@
       <div class="gbm-recommended">
 
         ${cards.slice(0,4).map(card => {
-
           const img =
             card.image ||
             card.thumbnail ||
+            card.thumbnail_url ||
             "/assets/thumbs/fallback-article.jpg";
 
           return `
@@ -743,9 +838,13 @@
               class="gbm-rec"
               href="${abs(card.url || "#")}"
               target="_blank"
+              rel="noopener"
             >
 
-              <img src="${abs(img)}" />
+              <img
+                src="${abs(img)}"
+                onerror="this.onerror=null;this.src='${abs('/assets/thumbs/fallback-article.jpg')}';"
+              />
 
               <div class="gbm-rec-title">
                 ${esc(card.title || "Untitled")}
@@ -753,7 +852,6 @@
 
             </a>
           `;
-
         }).join("")}
 
       </div>
@@ -761,29 +859,35 @@
   }
 
   function renderVisual(payload, question) {
-
     currentMode = "visual";
     lastPayload = payload;
 
+    const allCards = payload.cards || [];
+
+    const pdfCardsFromCards = allCards.filter(isPdfCard);
+    const videoCardsFromCards = allCards.filter(isVideoCard);
+    const podcastCardsFromCards = allCards.filter(isPodcastCard);
+
     const articles =
-      (payload.cards || []).filter(c => {
-        const t = String(c.type || "").toLowerCase();
-        return t !== "pdf" &&
-               t !== "video" &&
-               t !== "podcast";
+      allCards.filter(c => {
+        return !isPdfCard(c) && !isVideoCard(c) && !isPodcastCard(c);
       });
 
     const pdfs =
-      payload.magazines ||
-      [];
+      dedupeByUrl([]
+        .concat(payload.magazines || [])
+        .concat(payload.pdfs || [])
+        .concat(pdfCardsFromCards));
 
     const videos =
-      payload.videos ||
-      [];
+      dedupeByUrl([]
+        .concat(payload.videos || [])
+        .concat(videoCardsFromCards));
 
     const podcasts =
-      payload.podcasts ||
-      [];
+      dedupeByUrl([]
+        .concat(payload.podcasts || [])
+        .concat(podcastCardsFromCards));
 
     messages.innerHTML = `
 
@@ -792,12 +896,12 @@
       <div class="gbm-answer-wrap">
 
         <div class="gbm-avatar">
-          gb
+          GBM
         </div>
 
         <div class="gbm-answer">
-          ${(payload.visual_summary || payload.answer || "")
-            .replace(/\\n/g,"<br>")}
+          ${esc(payload.visual_summary || payload.answer || "")
+            .replace(/\n/g,"<br>")}
         </div>
 
       </div>
@@ -814,29 +918,29 @@
 
       <div class="gbm-grid">
 
-        ${renderColumn("Articles","article",articles)}
+        ${renderColumn("Articles","article",articles,"No related article cards were returned for this query.")}
 
-        ${renderColumn("PDFs & Guides","pdf",pdfs)}
+        ${renderColumn("PDFs & Guides","pdf",pdfs,"No related PDF or guide cards were returned for this query.")}
 
-        ${renderColumn("Videos","video",videos)}
+        ${renderColumn("Videos","video",videos,"Video results will appear here once the GBM YouTube index is connected.")}
 
-        ${renderColumn("Podcasts","podcast",podcasts)}
+        ${renderColumn("Podcasts","podcast",podcasts,"Podcast results will appear here once the GBM podcast playlist is indexed.")}
 
       </div>
 
-      ${renderRecommended(articles)}
+      ${renderRecommended(articles.slice(2))}
 
     `;
 
     const toggle = messages.querySelector(".gbm-toggle");
-
-    toggle.onclick = () => {
-      renderText(payload, question);
-    };
+    if (toggle) {
+      toggle.onclick = () => {
+        renderText(payload, question);
+      };
+    }
   }
 
   function renderText(payload, question) {
-
     currentMode = "text";
 
     messages.innerHTML = `
@@ -846,12 +950,12 @@
       <div class="gbm-answer-wrap">
 
         <div class="gbm-avatar">
-          gb
+          GBM
         </div>
 
         <div class="gbm-answer">
-          ${(payload.text_only_answer || payload.answer || "")
-            .replace(/\\n/g,"<br>")}
+          ${esc(payload.text_only_answer || payload.answer || "")
+            .replace(/\n/g,"<br>")}
         </div>
 
       </div>
@@ -863,16 +967,15 @@
     `;
 
     const toggle = messages.querySelector(".gbm-toggle");
-
-    toggle.onclick = () => {
-      renderVisual(payload, question);
-    };
+    if (toggle) {
+      toggle.onclick = () => {
+        renderVisual(payload, question);
+      };
+    }
   }
 
   async function askQuestion() {
-
     const question = input.value.trim();
-
     if (!question) return;
 
     messages.innerHTML = `
@@ -881,7 +984,7 @@
       <div class="gbm-answer-wrap">
 
         <div class="gbm-avatar">
-          gb
+          GBM
         </div>
 
         <div class="gbm-answer">
@@ -894,7 +997,6 @@
     input.value = "";
 
     try {
-
       const response = await fetch(
         API_BASE + "/chat",
         {
@@ -904,14 +1006,15 @@
           },
           body: JSON.stringify({
             question,
-            session_id:
-              "web-" + Date.now()
+            session_id: "web-" + Date.now(),
+            page_url: window.location.href,
+            referrer: document.referrer || "",
+            user_agent: navigator.userAgent || ""
           })
         }
       );
 
-      const payload =
-        await response.json();
+      const payload = await response.json();
 
       renderVisual(
         payload,
@@ -919,14 +1022,13 @@
       );
 
     } catch (err) {
-
       messages.innerHTML = `
         ${renderQuestion(question)}
 
         <div class="gbm-answer-wrap">
 
           <div class="gbm-avatar">
-            gb
+            GBM
           </div>
 
           <div class="gbm-answer">
@@ -938,16 +1040,12 @@
     }
   }
 
-  sendBtn.onclick =
-    askQuestion;
+  sendBtn.onclick = askQuestion;
 
   input.addEventListener(
     "keydown",
     function (e) {
-
-      if (
-        e.key === "Enter"
-      ) {
+      if (e.key === "Enter") {
         e.preventDefault();
         askQuestion();
       }
