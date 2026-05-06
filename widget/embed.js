@@ -927,44 +927,58 @@
         .concat(podcastCardsFromCards)
         .concat(podcastCardsFromSources);
 
-    messages.innerHTML = `
+messages.innerHTML = `
+  ${renderQuestion(question)}
 
-      ${renderQuestion(question)}
+  <div class="gbm-answer-wrap">
+    <div class="gbm-avatar">GBM</div>
 
-      <div class="gbm-answer-wrap">
+    <div class="gbm-answer">
+      ${esc(payload.visual_summary || payload.answer || "")
+        .replace(/\n/g,"<br>")}
+    </div>
+  </div>
 
-        <div class="gbm-avatar">
-          GBM
-        </div>
+  <div class="gbm-toggle">
+    DIVE DEEPER WITH TEXT ONLY
+  </div>
 
-        <div class="gbm-answer">
-          ${esc(payload.visual_summary || payload.answer || "")
-            .replace(/\n/g,"<br>")}
-        </div>
+  ${renderInsights(payload)}
 
-      </div>
+  <div class="gbm-grid">
 
-      ${renderInsights(payload)}
+    ${renderColumn(
+      "Articles",
+      "article",
+      articles,
+      "No related article cards were returned for this query."
+    )}
 
-      <div class="gbm-section-title">
-        DIVE DEEPER WITH TEXT ONLY
-      </div>
+    ${renderColumn(
+      "PDFs & Guides",
+      "pdf",
+      pdfs,
+      "No related PDF or guide cards were returned for this query."
+    )}
 
-      <div class="gbm-grid">
+    ${renderColumn(
+      "Videos",
+      "video",
+      videos,
+      "Video results will appear here once the GBM YouTube index is connected."
+    )}
 
-        ${renderColumn("Articles","article",articles,"No related article cards were returned for this query.")}
+    ${renderColumn(
+      "Podcasts",
+      "podcast",
+      podcasts,
+      "Podcast results will appear here once the GBM podcast playlist is indexed."
+    )}
 
-        ${renderColumn("PDFs & Guides","pdf",pdfs,"No related PDF or guide cards were returned for this query.")}
+  </div>
 
-        ${renderColumn("Videos","video",videos,"Video results will appear here once the GBM YouTube index is connected.")}
-
-        ${renderColumn("Podcasts","podcast",podcasts,"Podcast results will appear here once the GBM podcast playlist is indexed.")}
-
-      </div>
-
-      ${renderRecommended(articles.slice(2))}
-
-    `;
+  ${renderRecommended(articles.slice(2))}
+`;
 
     const toggle = messages.querySelector(".gbm-toggle");
     if (toggle) {
