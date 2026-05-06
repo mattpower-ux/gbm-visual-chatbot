@@ -62,6 +62,15 @@ ENABLE_BACKGROUND_CRAWL = os.getenv("ENABLE_BACKGROUND_CRAWL", "false").strip().
 crawl_lock = asyncio.Lock()
 rebuild_task: asyncio.Task | None = None
 
+# === YouTube Video Search Cache ===
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
+YOUTUBE_CHANNEL_USERNAME = os.getenv("YOUTUBE_CHANNEL_USERNAME", "greenbuildermedia").strip()
+YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "").strip()
+YOUTUBE_UPLOADS_PLAYLIST_ID = os.getenv("YOUTUBE_UPLOADS_PLAYLIST_ID", "").strip()
+YOUTUBE_CACHE_FILE = Path("/data/youtube_videos.json")
+YOUTUBE_CACHE_MAX_AGE_SECONDS = int(os.getenv("YOUTUBE_CACHE_MAX_AGE_SECONDS", str(60 * 60 * 24)))
+YOUTUBE_MAX_SYNC_RESULTS = int(os.getenv("YOUTUBE_MAX_SYNC_RESULTS", "250"))
+
 FUTURE_EVENT_TERMS = [
     "coming up", "upcoming", "future conference", "future conferences",
     "future event", "future events", "next conference", "next conferences",
@@ -830,6 +839,228 @@ def _build_visual_cards(sources: list[Any], chunks: list[dict[str, Any]]) -> tup
     return cards[:6], magazines[:3]
 
 
+
+def _youtube_api_get(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Call the YouTube Data API v3 using only stdlib urllib."""
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("Missing YOUTUBE_API_KEY environment variable.")
+
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
+
+    query = dict(params)
+    query["key"] = YOUTUBE_API_KEY
+    url = f"https://www.googleapis.com/youtube/v3/{endpoint}?{urlencode(query)}"
+
+    with urlopen(url, timeout=30) as response:
+        raw = response.read().decode("utf-8")
+
+    return json.loads(raw)
+
+
+def _get_youtube_uploads_playlist_id() -> str:
+    """Resolve the GBM channel's uploads playlist.
+
+    Preferred order:
+    1. YOUTUBE_UPLOADS_PLAYLIST_ID env var
+    2. YOUTUBE_CHANNEL_ID env var
+    3. legacy username lookup for greenbuildermedia
+    """
+    if YOUTUBE_UPLOADS_PLAYLIST_ID:
+        return YOUTUBE_UPLOADS_PLAYLIST_ID
+
+    if YOUTUBE_CHANNEL_ID:
+        data = _youtube_api_get(
+            "channels",
+            {
+                "part": "contentDetails",
+                "id": YOUTUBE_CHANNEL_ID,
+                "maxResults": 1,
+            },
+        )
+    else:
+        data = _youtube_api_get(
+            "channels",
+            {
+                "part": "contentDetails",
+                "forUsername": YOUTUBE_CHANNEL_USERNAME,
+                "maxResults": 1,
+            },
+        )
+
+    items = data.get("items", [])
+    if not items:
+        raise RuntimeError(
+            "Could not resolve YouTube channel. Set YOUTUBE_CHANNEL_ID or "
+            "YOUTUBE_UPLOADS_PLAYLIST_ID in Render if the legacy username lookup fails."
+        )
+
+    uploads = (
+        items[0]
+        .get("contentDetails", {})
+        .get("relatedPlaylists", {})
+        .get("uploads", "")
+    )
+    if not uploads:
+        raise RuntimeError("Could not find uploads playlist for the YouTube channel.")
+
+    return uploads
+
+
+def sync_youtube_videos() -> list[dict[str, Any]]:
+    """Fetch GBM YouTube video metadata and cache it on /data.
+
+    This does not touch LanceDB, PDFs, or the article index. It only writes:
+    /data/youtube_videos.json
+    """
+    if not YOUTUBE_API_KEY:
+        print("YouTube sync skipped: YOUTUBE_API_KEY is not configured.")
+        return []
+
+    playlist_id = _get_youtube_uploads_playlist_id()
+    videos: list[dict[str, Any]] = []
+    next_page_token: str | None = None
+
+    while True:
+        params: dict[str, Any] = {
+            "part": "snippet,contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": 50,
+        }
+        if next_page_token:
+            params["pageToken"] = next_page_token
+
+        data = _youtube_api_get("playlistItems", params)
+
+        for item in data.get("items", []):
+            snippet = item.get("snippet", {}) or {}
+            content_details = item.get("contentDetails", {}) or {}
+            video_id = (
+                content_details.get("videoId")
+                or snippet.get("resourceId", {}).get("videoId")
+            )
+            if not video_id:
+                continue
+
+            thumbnails = snippet.get("thumbnails", {}) or {}
+            thumb = (
+                thumbnails.get("maxres", {}).get("url")
+                or thumbnails.get("standard", {}).get("url")
+                or thumbnails.get("high", {}).get("url")
+                or thumbnails.get("medium", {}).get("url")
+                or thumbnails.get("default", {}).get("url")
+                or f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            )
+
+            title = snippet.get("title", "") or ""
+            description = snippet.get("description", "") or ""
+
+            # Skip deleted/private placeholders.
+            if title.lower() in {"private video", "deleted video"}:
+                continue
+
+            videos.append(
+                {
+                    "type": "video",
+                    "title": title,
+                    "description": description,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "thumbnail": thumb,
+                    "thumbnail_url": thumb,
+                    "image": thumb,
+                    "source": "Green Builder Media YouTube",
+                    "video_id": video_id,
+                    "published_at": snippet.get("publishedAt"),
+                }
+            )
+
+            if len(videos) >= YOUTUBE_MAX_SYNC_RESULTS:
+                break
+
+        if len(videos) >= YOUTUBE_MAX_SYNC_RESULTS:
+            break
+
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token:
+            break
+
+    YOUTUBE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    YOUTUBE_CACHE_FILE.write_text(json.dumps(videos, indent=2), encoding="utf-8")
+    print(f"Synced {len(videos)} YouTube videos to {YOUTUBE_CACHE_FILE}")
+
+    return videos
+
+
+def _load_youtube_videos() -> list[dict[str, Any]]:
+    """Load cached YouTube videos; refresh if missing or stale."""
+    try:
+        if YOUTUBE_CACHE_FILE.exists():
+            age = time.time() - YOUTUBE_CACHE_FILE.stat().st_mtime
+            if age <= YOUTUBE_CACHE_MAX_AGE_SECONDS:
+                return json.loads(YOUTUBE_CACHE_FILE.read_text(encoding="utf-8"))
+
+        return sync_youtube_videos()
+    except Exception as exc:
+        print(f"YouTube video cache load/sync failed: {exc}")
+        if YOUTUBE_CACHE_FILE.exists():
+            try:
+                return json.loads(YOUTUBE_CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return []
+
+
+def _tokenize_for_video_search(text: str) -> list[str]:
+    stop_words = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for",
+        "from", "has", "have", "how", "i", "in", "is", "it", "of", "on", "or",
+        "that", "the", "this", "to", "was", "what", "when", "where", "which",
+        "who", "why", "with", "work", "works",
+    }
+    words = re.findall(r"[a-z0-9]{3,}", (text or "").lower())
+    return [w for w in words if w not in stop_words]
+
+
+def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
+    """Return the best matching GBM YouTube videos for a chatbot query."""
+    videos = _load_youtube_videos()
+    if not videos:
+        return []
+
+    query_terms = _tokenize_for_video_search(query)
+    if not query_terms:
+        return []
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    for video in videos:
+        title = str(video.get("title", ""))
+        description = str(video.get("description", ""))
+        haystack = f"{title} {description}".lower()
+
+        score = 0.0
+        title_lower = title.lower()
+
+        for term in query_terms:
+            if term in title_lower:
+                score += 4.0
+            if term in haystack:
+                score += 1.0
+
+        # Small phrase boost for obvious content matches.
+        q_lower = (query or "").lower()
+        for phrase in ("heat pump", "solar", "electrification", "resilience", "net zero", "housing"):
+            if phrase in q_lower and phrase in haystack:
+                score += 6.0
+
+        if score > 0:
+            scored.append((score, video))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [dict(video) for _, video in scored[:limit]]
+
+
+
 def _build_key_insights(answer: str) -> list[dict[str, str]]:
     """Create lightweight insight cards from the generated answer."""
     text = answer or ""
@@ -852,13 +1083,14 @@ def _build_key_insights(answer: str) -> list[dict[str, str]]:
     return insights
 
 
-def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None, question: str = "") -> dict[str, Any]:
     """Return the backward-compatible answer plus visual-mode fields."""
     chunks = chunks or []
     base = response.model_dump()
     answer = base.get("answer", "") or ""
     sources = base.get("sources", []) or []
     cards, magazines = _build_visual_cards(sources, chunks)
+    videos = search_youtube_videos(question, limit=2) if question else []
 
     base.update(
         {
@@ -866,6 +1098,7 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
             "key_insights": _build_key_insights(answer),
             "cards": cards,
             "magazines": magazines,
+            "videos": videos,
             "text_only_answer": answer,
             "ui_mode_default": "visual",
         }
@@ -899,7 +1132,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                 "correction_id": correction.get("id"),
             }
         )
-        return _chat_payload(response)
+        return _chat_payload(response, question=req.question)
 
     try:
         chunks = search(req.question)
@@ -928,7 +1161,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                     "private_archive_used": False,
                 }
             )
-            return _chat_payload(response)
+            return _chat_payload(response, question=req.question)
         raise HTTPException(status_code=500, detail=f"Search failed: {exc}") from exc
 
     future_query = is_future_event_query(req.question)
@@ -955,7 +1188,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                     "private_archive_used": False,
                 }
             )
-            return _chat_payload(response)
+            return _chat_payload(response, question=req.question)
 
     if not chunks:
         response = ChatResponse(
@@ -975,7 +1208,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                 "private_archive_used": False,
             }
         )
-        return _chat_payload(response)
+        return _chat_payload(response, question=req.question)
 
     try:
         answer = answer_question(req.question, chunks)
@@ -1092,7 +1325,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             "attribution_note": attribution_note,
         }
     )
-    return _chat_payload(response, chunks)
+    return _chat_payload(response, chunks, question=req.question)
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1145,6 +1378,37 @@ def admin_rebuild_index_status(_: str = Depends(admin_auth)) -> dict:
         return {"status": "completed"}
 
     return {"status": "running"}
+
+
+@app.get("/api/admin/sync-youtube")
+def admin_sync_youtube(_: str = Depends(admin_auth)) -> dict:
+    videos = sync_youtube_videos()
+    return {
+        "ok": True,
+        "message": f"Synced {len(videos)} YouTube video(s).",
+        "videos_synced": len(videos),
+        "cache_file": str(YOUTUBE_CACHE_FILE),
+    }
+
+
+@app.get("/api/admin/youtube-status")
+def admin_youtube_status(_: str = Depends(admin_auth)) -> dict:
+    exists = YOUTUBE_CACHE_FILE.exists()
+    videos: list[dict[str, Any]] = []
+    if exists:
+        try:
+            videos = json.loads(YOUTUBE_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            videos = []
+
+    return {
+        "ok": True,
+        "api_key_configured": bool(YOUTUBE_API_KEY),
+        "cache_exists": exists,
+        "cache_file": str(YOUTUBE_CACHE_FILE),
+        "video_count": len(videos),
+        "sample": videos[:3],
+    }
 
 
 @app.get("/")
