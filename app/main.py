@@ -71,6 +71,14 @@ YOUTUBE_CACHE_FILE = Path("/data/youtube_videos.json")
 YOUTUBE_CACHE_MAX_AGE_SECONDS = int(os.getenv("YOUTUBE_CACHE_MAX_AGE_SECONDS", str(60 * 60 * 24)))
 YOUTUBE_MAX_SYNC_RESULTS = int(os.getenv("YOUTUBE_MAX_SYNC_RESULTS", "250"))
 
+# === Podcast Playlist Cache ===
+PODCAST_PLAYLIST_ID = os.getenv(
+    "PODCAST_PLAYLIST_ID",
+    "PLwQAcwOzaQyfAMZ7xA2Mz2acdLVauKFlV"
+).strip()
+PODCAST_CACHE_FILE = Path("/data/podcast_videos.json")
+PODCAST_MAX_RESULTS = int(os.getenv("PODCAST_MAX_RESULTS", "250"))
+
 FUTURE_EVENT_TERMS = [
     "coming up", "upcoming", "future conference", "future conferences",
     "future event", "future events", "next conference", "next conferences",
@@ -1106,6 +1114,145 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
 
 
 
+
+def sync_podcast_videos() -> list[dict[str, Any]]:
+    """Fetch GBM podcast playlist metadata and cache it."""
+    if not YOUTUBE_API_KEY:
+        print("Podcast sync skipped: YOUTUBE_API_KEY missing.")
+        return []
+
+    podcasts: list[dict[str, Any]] = []
+    next_page_token: str | None = None
+
+    while True:
+        params: dict[str, Any] = {
+            "part": "snippet,contentDetails",
+            "playlistId": PODCAST_PLAYLIST_ID,
+            "maxResults": 50,
+        }
+
+        if next_page_token:
+            params["pageToken"] = next_page_token
+
+        data = _youtube_api_get("playlistItems", params)
+
+        for item in data.get("items", []):
+            snippet = item.get("snippet", {}) or {}
+            content_details = item.get("contentDetails", {}) or {}
+
+            video_id = (
+                content_details.get("videoId")
+                or snippet.get("resourceId", {}).get("videoId")
+            )
+
+            if not video_id:
+                continue
+
+            title = snippet.get("title", "") or ""
+            description = snippet.get("description", "") or ""
+
+            if title.lower() in {"private video", "deleted video"}:
+                continue
+
+            thumbnails = snippet.get("thumbnails", {}) or {}
+            thumb = (
+                thumbnails.get("maxres", {}).get("url")
+                or thumbnails.get("standard", {}).get("url")
+                or thumbnails.get("high", {}).get("url")
+                or thumbnails.get("medium", {}).get("url")
+                or thumbnails.get("default", {}).get("url")
+                or f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+            )
+
+            podcasts.append(
+                {
+                    "type": "podcast",
+                    "title": title,
+                    "description": description,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "thumbnail": thumb,
+                    "thumbnail_url": thumb,
+                    "image": thumb,
+                    "source": "Green Builder Media Network",
+                    "video_id": video_id,
+                    "published_at": snippet.get("publishedAt"),
+                }
+            )
+
+            if len(podcasts) >= PODCAST_MAX_RESULTS:
+                break
+
+        if len(podcasts) >= PODCAST_MAX_RESULTS:
+            break
+
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token:
+            break
+
+    PODCAST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PODCAST_CACHE_FILE.write_text(json.dumps(podcasts, indent=2), encoding="utf-8")
+    print(f"Synced {len(podcasts)} podcast videos to {PODCAST_CACHE_FILE}")
+
+    return podcasts
+
+
+def _load_podcast_videos() -> list[dict[str, Any]]:
+    """Load cached podcast videos; sync from YouTube playlist if missing."""
+    try:
+        if PODCAST_CACHE_FILE.exists():
+            return json.loads(PODCAST_CACHE_FILE.read_text(encoding="utf-8"))
+
+        return sync_podcast_videos()
+    except Exception as exc:
+        print(f"Podcast cache load/sync failed: {exc}")
+        if PODCAST_CACHE_FILE.exists():
+            try:
+                return json.loads(PODCAST_CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return []
+
+
+def search_podcasts(query: str, limit: int = 2) -> list[dict[str, Any]]:
+    """Return matching GBM podcast episodes from the podcast YouTube playlist."""
+    podcasts = _load_podcast_videos()
+    if not podcasts:
+        return []
+
+    query_terms = _tokenize_for_video_search(query)
+    if not query_terms:
+        return []
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    for podcast in podcasts:
+        title = str(podcast.get("title", ""))
+        description = str(podcast.get("description", ""))
+        haystack = f"{title} {description}".lower()
+        title_lower = title.lower()
+
+        score = 0.0
+
+        for term in query_terms:
+            if term in title_lower:
+                score += 4.0
+            if term in haystack:
+                score += 1.0
+
+        q_lower = (query or "").lower()
+        for phrase in (
+            "heat pump", "solar", "electrification", "resilience", "net zero",
+            "housing", "affordability", "decarbonization", "climate", "energy"
+        ):
+            if phrase in q_lower and phrase in haystack:
+                score += 6.0
+
+        if score > 0:
+            scored.append((score, podcast))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [dict(podcast) for _, podcast in scored[:limit]]
+
 def _score_magazine_chunk_for_query(chunk: dict[str, Any], question: str) -> float:
     """Lightweight keyword score for magazine/PDF card fallback search."""
     query_terms = [
@@ -1339,6 +1486,7 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
 
     magazines = magazines[:2]
     videos = search_youtube_videos(question, limit=2) if question else []
+    podcasts = search_podcasts(question, limit=2) if question else []
 
     base.update(
         {
@@ -1347,6 +1495,7 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
             "cards": cards,
             "magazines": magazines,
             "videos": videos,
+            "podcasts": podcasts,
             "text_only_answer": answer,
             "ui_mode_default": "visual",
         }
@@ -1638,6 +1787,38 @@ def admin_sync_youtube(_: str = Depends(admin_auth)) -> dict:
         "cache_file": str(YOUTUBE_CACHE_FILE),
     }
 
+
+
+@app.get("/api/admin/sync-podcasts")
+def admin_sync_podcasts(_: str = Depends(admin_auth)) -> dict:
+    podcasts = sync_podcast_videos()
+    return {
+        "ok": True,
+        "message": f"Synced {len(podcasts)} podcast(s).",
+        "podcasts_synced": len(podcasts),
+        "cache_file": str(PODCAST_CACHE_FILE),
+    }
+
+
+@app.get("/api/admin/podcast-status")
+def admin_podcast_status(_: str = Depends(admin_auth)) -> dict:
+    exists = PODCAST_CACHE_FILE.exists()
+    podcasts: list[dict[str, Any]] = []
+    if exists:
+        try:
+            podcasts = json.loads(PODCAST_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            podcasts = []
+
+    return {
+        "ok": True,
+        "api_key_configured": bool(YOUTUBE_API_KEY),
+        "playlist_id": PODCAST_PLAYLIST_ID,
+        "cache_exists": exists,
+        "cache_file": str(PODCAST_CACHE_FILE),
+        "podcast_count": len(podcasts),
+        "sample": podcasts[:3],
+    }
 
 @app.get("/api/admin/youtube-status")
 def admin_youtube_status(_: str = Depends(admin_auth)) -> dict:
