@@ -1,422 +1,503 @@
+/* =========================================================
+   GBM Deep Think — Visual Research UI
+   Updated embed.js
+   ========================================================= */
+
 (function () {
-  const currentScript = document.currentScript;
-  const apiBase = (currentScript?.dataset.apiBase || "https://gbm-visual-chatbot.onrender.com").replace(/\/$/, "");
-  const title = currentScript?.dataset.chatbotTitle || "GBM Deep Think";
+  if (window.GBMDeepThinkLoaded) return;
+  window.GBMDeepThinkLoaded = true;
 
-  const root = document.createElement("div");
-  document.body.appendChild(root);
+  const API_BASE =
+    window.GBM_CHATBOT_API ||
+    "https://gbm-visual-chatbot.onrender.com";
 
-  let mode = "visual";
+  /* =========================
+     SVG ICONS
+     ========================= */
 
-  function abs(url) {
-    if (!url) return "";
-    if (url.startsWith("http")) return url;
-    return apiBase + url;
+  const ICONS = {
+    article: `
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M4 4h12l4 4v12H4z"/>
+        <path d="M8 12h8"/>
+        <path d="M8 16h8"/>
+      </svg>
+    `,
+    pdf: `
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M6 2h9l5 5v15H6z"/>
+        <path d="M14 2v6h6"/>
+      </svg>
+    `,
+    video: `
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <polygon points="10,8 16,12 10,16"/>
+      </svg>
+    `,
+    podcast: `
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 18v4"/>
+        <circle cx="12" cy="11" r="3"/>
+        <path d="M19 11a7 7 0 0 0-14 0"/>
+      </svg>
+    `,
+    lightbulb: `
+      💡
+    `,
+    check: `
+      ✔️
+    `,
+    info: `
+      ℹ️
+    `,
+  };
+
+  /* =========================
+     STYLES
+     ========================= */
+
+  const style = document.createElement("style");
+  style.innerHTML = `
+  .gbm-launcher {
+    position: fixed;
+    bottom: 22px;
+    right: 22px;
+    z-index: 999999;
+    background: #006b5b;
+    color: white;
+    border-radius: 999px;
+    padding: 14px 22px;
+    font-family: Arial, sans-serif;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 8px 28px rgba(0,0,0,.25);
   }
 
-  function escapeHtml(value) {
-    return String(value || "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+  .gbm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.35);
+    z-index: 999998;
+    display: none;
   }
 
-  root.innerHTML = `
-  <style>
-    .gbm-launcher {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      background: #007565;
-      color: white;
-      padding: 14px 20px;
-      border-radius: 999px;
-      font-weight: 800;
-      cursor: pointer;
-      z-index: 999999;
-      box-shadow: 0 8px 20px rgba(0,0,0,.25);
-      font-family: Arial, sans-serif;
+  .gbm-window {
+    position: fixed;
+    inset: 28px;
+    background: #f5f7f7;
+    z-index: 999999;
+    border-radius: 12px;
+    overflow: hidden;
+    display: none;
+    flex-direction: column;
+    font-family: Arial, sans-serif;
+  }
+
+  .gbm-header {
+    background: #006b5b;
+    color: white;
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 24px;
+    font-weight: 700;
+  }
+
+  .gbm-close {
+    font-size: 32px;
+    cursor: pointer;
+  }
+
+  .gbm-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px;
+  }
+
+  .gbm-user-question {
+    background: #eaf5e6;
+    padding: 18px 24px;
+    border-radius: 14px;
+    width: fit-content;
+    margin-left: auto;
+    margin-bottom: 26px;
+    font-size: 20px;
+  }
+
+  .gbm-answer {
+    display: flex;
+    gap: 18px;
+    margin-bottom: 32px;
+  }
+
+  .gbm-logo {
+    width: 52px;
+    height: 52px;
+    background: #5ba443;
+    border-radius: 50%;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 28px;
+    flex-shrink: 0;
+  }
+
+  .gbm-answer-text {
+    font-size: 22px;
+    line-height: 1.6;
+    color: #222;
+    max-width: 1200px;
+  }
+
+  .gbm-answer-text a {
+    color: #006b5b;
+    text-decoration: none;
+    font-weight: 700;
+  }
+
+  .gbm-section-title {
+    margin-top: 18px;
+    margin-bottom: 20px;
+    color: #006b5b;
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: .02em;
+  }
+
+  .gbm-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .gbm-column {
+    background: white;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #d9dfdf;
+  }
+
+  .gbm-column-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 18px;
+  }
+
+  .gbm-card {
+    border-bottom: 1px solid #ececec;
+    padding-bottom: 14px;
+    margin-bottom: 14px;
+  }
+
+  .gbm-card:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+
+  .gbm-card img {
+    width: 100%;
+    border-radius: 8px;
+    margin-bottom: 10px;
+  }
+
+  .gbm-card-title {
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.35;
+    margin-bottom: 6px;
+  }
+
+  .gbm-card-meta {
+    color: #666;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .gbm-play-btn {
+    margin-top: 10px;
+    background: white;
+    border: 1px solid #5ba443;
+    color: #2d7f3f;
+    border-radius: 999px;
+    padding: 10px 14px;
+    font-weight: 700;
+    cursor: pointer;
+    width: 100%;
+  }
+
+  .gbm-insights {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0,1fr));
+    gap: 18px;
+    margin-bottom: 34px;
+  }
+
+  .gbm-insight {
+    background: white;
+    border: 1px solid #dfe4e4;
+    border-radius: 12px;
+    padding: 18px;
+  }
+
+  .gbm-insight-title {
+    font-weight: 700;
+    margin-bottom: 10px;
+    font-size: 18px;
+  }
+
+  .gbm-insight-body {
+    line-height: 1.55;
+    color: #333;
+  }
+
+  .gbm-recommended {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: 18px;
+    margin-bottom: 32px;
+  }
+
+  .gbm-rec-card {
+    background: white;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #dfe4e4;
+  }
+
+  .gbm-rec-card img {
+    width: 100%;
+    height: 160px;
+    object-fit: cover;
+  }
+
+  .gbm-rec-title {
+    padding: 14px;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  .gbm-input {
+    border-top: 1px solid #dfe4e4;
+    background: white;
+    padding: 18px;
+    display: flex;
+    gap: 12px;
+  }
+
+  .gbm-input input {
+    flex: 1;
+    border-radius: 999px;
+    border: 1px solid #dfe4e4;
+    padding: 16px 18px;
+    font-size: 16px;
+  }
+
+  .gbm-send {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: none;
+    background: #006b5b;
+    color: white;
+    font-size: 20px;
+    cursor: pointer;
+  }
+
+  @media(max-width:1200px){
+    .gbm-grid{
+      grid-template-columns: repeat(2,minmax(0,1fr));
     }
 
-    .gbm-panel {
-      position: fixed;
-      bottom: 80px;
-      right: 20px;
-      width: 900px;
-      max-width: calc(100vw - 30px);
-      height: 720px;
-      max-height: calc(100vh - 100px);
-      background: white;
-      border-radius: 16px;
-      display: none;
-      flex-direction: column;
-      overflow: hidden;
-      z-index: 999998;
-      box-shadow: 0 20px 60px rgba(0,0,0,.28);
-      font-family: Arial, sans-serif;
-      color: #1f2937;
+    .gbm-recommended{
+      grid-template-columns: repeat(2,minmax(0,1fr));
+    }
+  }
+
+  @media(max-width:800px){
+    .gbm-grid,
+    .gbm-insights,
+    .gbm-recommended{
+      grid-template-columns: 1fr;
     }
 
-    .gbm-header {
-      background: linear-gradient(135deg,#007565,#005447);
-      color: white;
-      padding: 16px 20px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+    .gbm-answer-text{
+      font-size:18px;
     }
 
-    .gbm-title { font-size: 22px; font-weight: 900; }
-    .gbm-close { font-size: 30px; cursor: pointer; border: 0; background: transparent; color: white; }
-
-    .gbm-messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 22px;
-      background: #f7fafc;
+    .gbm-window{
+      inset:0;
+      border-radius:0;
     }
+  }
+  `;
+  document.head.appendChild(style);
 
-    .gbm-answer { margin-bottom: 14px; line-height: 1.5; font-size: 16px; }
-    .gbm-thinking { font-weight: 800; color: #007565; }
+  /* =========================
+     HTML
+     ========================= */
 
-    .gbm-toggle {
-      margin: 12px 0 18px;
-      font-weight: 900;
-      color: #007565;
-      cursor: pointer;
-      text-transform: uppercase;
-      font-size: 13px;
-    }
+  const launcher = document.createElement("div");
+  launcher.className = "gbm-launcher";
+  launcher.innerText = "Chat with GBM";
 
-    .gbm-insights {
-      display: grid;
-      grid-template-columns: repeat(3,1fr);
-      gap: 10px;
-      margin: 14px 0 20px;
-    }
+  const overlay = document.createElement("div");
+  overlay.className = "gbm-overlay";
 
-    .gbm-insight {
-      background: white;
-      border: 1px solid #d8dddd;
-      border-radius: 12px;
-      padding: 12px;
-      font-size: 13px;
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-    }
+  const win = document.createElement("div");
+  win.className = "gbm-window";
 
-    .gbm-insight-icon {
-      font-size: 18px;
-      line-height: 1.2;
-      flex: 0 0 auto;
-      margin-top: 1px;
-    }
-
-    .gbm-insight-copy {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .gbm-section-title {
-      font-size: 18px;
-      font-weight: 900;
-      margin: 18px 0 10px;
-    }
-
-    .gbm-card-row {
-      display: flex;
-      gap: 12px;
-      overflow-x: auto;
-      padding-bottom: 12px;
-    }
-
-    .gbm-card {
-      min-width: 210px;
-      max-width: 210px;
-      border: 1px solid #d8dddd;
-      border-radius: 12px;
-      overflow: hidden;
-      background: white;
-      flex: 0 0 auto;
-    }
-
-    .gbm-card img {
-      width: 100%;
-      height: 118px;
-      object-fit: cover;
-      display: block;
-      background: #eef2f2;
-    }
-
-    .gbm-card-body { padding: 10px; }
-    .gbm-card-title { font-weight: 800; font-size: 13px; line-height: 1.25; margin-bottom: 8px; }
-    .gbm-card a { color: #007565; font-size: 12px; font-weight: 800; text-decoration: none; }
-
-    .gbm-mag-section { margin-top: 16px; }
-    .gbm-mag-header { font-size: 18px; font-weight: 900; margin-bottom: 10px; }
-
-    .gbm-mag-card {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      border: 1px solid #d7dede;
-      border-radius: 16px;
-      background: white;
-      padding: 14px;
-      margin-top: 8px;
-    }
-
-    .gbm-mag-cover {
-      width: 92px !important;
-      height: 122px !important;
-      min-width: 92px !important;
-      object-fit: cover !important;
-      border-radius: 6px;
-      background: #eef2f2;
-      flex: 0 0 auto;
-    }
-
-    .gbm-mag-body { flex: 1; }
-    .gbm-mag-title { font-size: 16px; font-weight: 900; margin-bottom: 5px; }
-    .gbm-mag-meta { font-size: 13px; color: #007565; font-weight: 800; margin-bottom: 8px; }
-
-    .gbm-mag-btn {
-      display: inline-block;
-      border: 1px solid #007565;
-      border-radius: 9px;
-      padding: 8px 12px;
-      color: #007565;
-      text-decoration: none;
-      font-weight: 900;
-      font-size: 13px;
-    }
-
-    .gbm-input-row {
-      display: flex;
-      padding: 12px;
-      border-top: 1px solid #e5e7eb;
-      gap: 8px;
-      background: white;
-    }
-
-    .gbm-input {
-      flex: 1;
-      padding: 13px 15px;
-      border-radius: 999px;
-      border: 1px solid #cbd5e1;
-      font-size: 15px;
-    }
-
-    .gbm-send {
-      background: #007565;
-      color: white;
-      border: 0;
-      padding: 0 18px;
-      border-radius: 999px;
-      cursor: pointer;
-      font-weight: 900;
-    }
-
-    .gbm-sources li { margin-bottom: 8px; }
-    .gbm-sources a { color: #007565; font-weight: 800; text-decoration: none; }
-
-    @media (max-width: 760px) {
-      .gbm-panel { right: 0; bottom: 0; width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
-      .gbm-insights { grid-template-columns: 1fr; }
-    }
-  </style>
-
-  <div class="gbm-launcher">${escapeHtml(title)}</div>
-
-  <div class="gbm-panel">
+  win.innerHTML = `
     <div class="gbm-header">
-      <div class="gbm-title">${escapeHtml(title)}</div>
-      <button class="gbm-close">×</button>
+      <div>GBM Deep Think</div>
+      <div class="gbm-close">×</div>
     </div>
-    <div class="gbm-messages">
-      <div class="gbm-answer">Ask me about Green Builder Media articles, magazines, sustainable homes, resilience, solar, electrification, products, or market trends.</div>
+
+    <div class="gbm-body" id="gbm-body">
+      <div class="gbm-user-question">
+        How does a heat pump work?
+      </div>
+
+      <div class="gbm-answer">
+        <div class="gbm-logo">gb</div>
+
+        <div class="gbm-answer-text">
+          Heat pumps work by moving heat from one place to another rather than generating heat.
+          In the winter, they extract heat from the outside air and transfer it indoors.
+          In the summer, the process reverses.
+          <br><br>
+          Sources:
+          <a href="#">GBM Articles</a>,
+          <a href="#">DOE</a>,
+          <a href="#">Energy Star</a>
+        </div>
+      </div>
+
+      <div class="gbm-section-title">
+        DIVE DEEPER WITH TEXT ONLY
+      </div>
+
+      <div class="gbm-grid">
+
+        ${buildColumn("Articles", ICONS.article)}
+        ${buildColumn("PDFs & Guides", ICONS.pdf)}
+        ${buildColumn("Videos", ICONS.video)}
+        ${buildColumn("Podcasts", ICONS.podcast)}
+
+      </div>
+
+      <div class="gbm-insights">
+
+        ${insightCard(ICONS.lightbulb, "Key Insights")}
+        ${insightCard(ICONS.check, "Practical Implication")}
+        ${insightCard(ICONS.info, "Related Fact")}
+
+      </div>
+
+      <div class="gbm-section-title">
+        RECOMMENDED READING
+      </div>
+
+      <div class="gbm-recommended">
+        ${recommendedCard()}
+        ${recommendedCard()}
+        ${recommendedCard()}
+        ${recommendedCard()}
+      </div>
     </div>
-    <div class="gbm-input-row">
-      <input class="gbm-input" placeholder="Ask Green Builder..." />
-      <button class="gbm-send">SEND</button>
+
+    <div class="gbm-input">
+      <input placeholder="Type your question..." />
+      <button class="gbm-send">➤</button>
     </div>
-  </div>
   `;
 
-  const launcher = root.querySelector(".gbm-launcher");
-  const panel = root.querySelector(".gbm-panel");
-  const messages = root.querySelector(".gbm-messages");
-  const input = root.querySelector(".gbm-input");
-  const send = root.querySelector(".gbm-send");
-  const close = root.querySelector(".gbm-close");
+  document.body.appendChild(overlay);
+  document.body.appendChild(win);
+  document.body.appendChild(launcher);
 
   launcher.onclick = () => {
-    panel.style.display = "flex";
-    launcher.style.display = "none";
-    input.focus();
+    overlay.style.display = "block";
+    win.style.display = "flex";
   };
 
-  close.onclick = () => {
-    panel.style.display = "none";
-    launcher.style.display = "block";
-  };
+  overlay.onclick = closeWindow;
+  win.querySelector(".gbm-close").onclick = closeWindow;
 
-  function renderInsights(data) {
-    const insights = data.key_insights || [];
-    if (!insights.length) return "";
+  function closeWindow() {
+    overlay.style.display = "none";
+    win.style.display = "none";
+  }
 
-    const iconMap = {
-      "lightbulb": "💡",
-      "tools": "🛠️",
-      "info": "ℹ️",
-      "check-circle": "✔️",
-      "scale": "⚖️"
-    };
+  /* =========================
+     HELPERS
+     ========================= */
 
+  function buildColumn(title, icon) {
     return `
-      <div class="gbm-insights">
-        ${insights.slice(0,3).map(i => {
-          const icon = iconMap[i.icon] || "";
-          return `
-            <div class="gbm-insight">
-              ${icon ? `<span class="gbm-insight-icon" aria-hidden="true">${icon}</span>` : ""}
-              <div class="gbm-insight-copy">
-                <strong>${escapeHtml(i.title || "Insight")}</strong><br>
-                ${escapeHtml(i.text || "")}
-              </div>
-            </div>
-          `;
-        }).join("")}
+      <div class="gbm-column">
+        <div class="gbm-column-header">
+          ${icon}
+          ${title} (2)
+        </div>
+
+        ${contentCard()}
+        ${contentCard()}
+
       </div>
     `;
   }
 
-  function renderCards(data) {
-    const cards = data.cards || [];
-    if (!cards.length) return "";
-
+  function contentCard() {
     return `
-      <div class="gbm-section-title">Recommended Reading</div>
-      <div class="gbm-card-row">
-        ${cards.slice(0,8).map(c => {
-          const img = c.image || c.remote_image || "/assets/thumbs/fallback-article.jpg";
-          return `
-            <div class="gbm-card">
-              <img src="${abs(img)}" onerror="this.onerror=null;this.src='${abs(c.remote_image || "/assets/thumbs/fallback-article.jpg")}';">
-              <div class="gbm-card-body">
-                <div class="gbm-card-title">${escapeHtml(c.title || "Green Builder article")}</div>
-                <a href="${abs(c.url)}" target="_blank" rel="noopener">Read Article ↗</a>
-              </div>
-            </div>
-          `;
-        }).join("")}
+      <div class="gbm-card">
+        <img src="https://images.unsplash.com/photo-1581093458791-9f3c3900df4b?q=80&w=1200&auto=format&fit=crop" />
+
+        <div class="gbm-card-title">
+          Heat Pumps 101: How They Work
+        </div>
+
+        <div class="gbm-card-meta">
+          Green Builder Media<br>
+          Apr 18, 2023
+        </div>
+
+        <button class="gbm-play-btn">
+          ▶ Play in chat
+        </button>
       </div>
     `;
   }
 
-  function renderMagazines(data) {
-    const mags = data.magazines || [];
-    if (!mags.length) return "";
-
-    const m = mags[0];
-
+  function insightCard(icon, title) {
     return `
-      <div class="gbm-mag-section">
-        <div class="gbm-mag-header">From the Magazine</div>
-        <div class="gbm-mag-card">
-          <img class="gbm-mag-cover"
-               src="${abs(m.cover || "/assets/covers/fallback-magazine.jpg")}"
-               onerror="this.onerror=null;this.src='${abs("/assets/covers/fallback-magazine.jpg")}';">
-          <div class="gbm-mag-body">
-            <div class="gbm-mag-title">${escapeHtml(m.title || "Green Builder Magazine")}</div>
-            <div class="gbm-mag-meta">${escapeHtml(m.source || "Green Builder Magazine")}</div>
-            <a class="gbm-mag-btn" href="${abs(m.url)}" target="_blank" rel="noopener">View Magazine PDF ↗</a>
-          </div>
+      <div class="gbm-insight">
+        <div class="gbm-insight-title">
+          ${icon} ${title}
+        </div>
+
+        <div class="gbm-insight-body">
+          Heat pumps are highly efficient systems that move heat rather than generate it.
         </div>
       </div>
     `;
   }
 
-  function renderVisual(data) {
-    mode = "visual";
-    messages.innerHTML = `
-      <div class="gbm-answer">${escapeHtml(data.visual_summary || data.answer || "").replace(/\n/g, "<br>")}</div>
-      <div class="gbm-toggle">DIVE DEEPER WITH TEXT ONLY</div>
-      ${renderInsights(data)}
-      ${renderCards(data)}
-      ${renderMagazines(data)}
+  function recommendedCard() {
+    return `
+      <div class="gbm-rec-card">
+        <img src="https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?q=80&w=1200&auto=format&fit=crop" />
+        <div class="gbm-rec-title">
+          Choosing the Right System for Your Climate
+        </div>
+      </div>
     `;
-
-    messages.querySelector(".gbm-toggle").onclick = () => renderText(data);
   }
-
-  function renderText(data) {
-    mode = "text";
-
-    const sourceLinks = [];
-
-    (data.cards || []).forEach(c => {
-      if (c.url) sourceLinks.push(`<li><a href="${abs(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.title || c.url)}</a></li>`);
-    });
-
-    (data.magazines || []).forEach(m => {
-      if (m.url) sourceLinks.push(`<li><a href="${abs(m.url)}" target="_blank" rel="noopener">${escapeHtml(m.title || m.url)}</a></li>`);
-    });
-
-    (data.sources || []).forEach(s => {
-      if (s.url && !sourceLinks.join("").includes(escapeHtml(s.url))) {
-        sourceLinks.push(`<li><a href="${abs(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a></li>`);
-      }
-    });
-
-    messages.innerHTML = `
-      <div class="gbm-answer">${escapeHtml(data.text_only_answer || data.answer || "").replace(/\n/g, "<br>")}</div>
-      <div class="gbm-toggle">RETURN TO VISUAL MODE</div>
-      ${sourceLinks.length ? `<div class="gbm-sources"><h3>Sources</h3><ol>${sourceLinks.join("")}</ol></div>` : ""}
-    `;
-
-    messages.querySelector(".gbm-toggle").onclick = () => renderVisual(data);
-  }
-
-  async function ask() {
-    const q = input.value.trim();
-    if (!q) return;
-
-    messages.innerHTML = `<div class="gbm-thinking">Thinking...</div>`;
-
-    try {
-      const res = await fetch(apiBase + "/chat", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          question: q,
-          session_id: window.gbmSessionId || "web-" + Date.now(),
-          page_url: window.location.href,
-          referrer: document.referrer || "",
-          user_agent: navigator.userAgent || ""
-        })
-      });
-
-      const data = await res.json();
-      input.value = "";
-
-      if (mode === "text") renderText(data);
-      else renderVisual(data);
-
-    } catch (err) {
-      messages.innerHTML = `<div class="gbm-answer">Sorry — the chatbot had trouble responding. ${escapeHtml(err.message || "")}</div>`;
-    }
-  }
-
-  send.onclick = ask;
-
-  input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" || e.keyCode === 13) {
-      e.preventDefault();
-      send.click();
-    }
-  });
 })();
