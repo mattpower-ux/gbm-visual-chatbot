@@ -399,19 +399,64 @@ def _chunk_years(chunk: dict[str, Any]) -> set[str]:
 
 
 def _magazine_cover_for_url(url: str, chunk: dict[str, Any] | None = None) -> str:
-    """Return the generated magazine cover path for a PDF URL/chunk."""
+    """Return the best available generated magazine cover path for a PDF URL/chunk."""
     from urllib.parse import unquote
 
     chunk = chunk or {}
-    explicit = chunk.get("cover_url") or chunk.get("thumbnail_url") or chunk.get("image") or chunk.get("thumbnail")
-    if explicit:
+
+    explicit = (
+        chunk.get("cover_url")
+        or chunk.get("thumbnail_url")
+        or chunk.get("image")
+        or chunk.get("thumbnail")
+    )
+    if explicit and "fallback" not in str(explicit).lower():
         return str(explicit)
 
     filename = str(chunk.get("pdf_filename") or "").strip()
+
     if not filename and url:
-        filename = Path(unquote(str(url).split("/magazines/", 1)[-1])).name
+        try:
+            filename = Path(unquote(str(url).split("/magazines/", 1)[-1])).name
+        except Exception:
+            filename = ""
+
     if not filename:
         return "/assets/covers/fallback-magazine.jpg"
+
+    cover_dir = Path("/data/assets/covers")
+
+    raw_stem = Path(filename).stem
+    decoded_stem = Path(unquote(filename)).stem
+    safe_stem = _asset_safe_name(decoded_stem).replace(".pdf", "")
+
+    candidates = [
+        f"{raw_stem}.jpg",
+        f"{decoded_stem}.jpg",
+        f"{safe_stem}.jpg",
+        f"{raw_stem}.png",
+        f"{decoded_stem}.png",
+        f"{safe_stem}.png",
+    ]
+
+    # Also try encoded-space version used by some earlier cover generators.
+    encoded_stem = Path(filename.replace(" ", "%20")).stem
+    candidates.extend([
+        f"{encoded_stem}.jpg",
+        f"{encoded_stem}.png",
+    ])
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+
+        path = cover_dir / candidate
+        if path.exists():
+            return f"/assets/covers/{candidate}"
+
+    return "/assets/covers/fallback-magazine.jpg"
 
     encoded_name = filename.replace(" ", "%20")
     stem = Path(encoded_name).stem
