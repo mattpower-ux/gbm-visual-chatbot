@@ -26,11 +26,25 @@
   let currentMode = "visual";
 
   function abs(url) {
-    if (!url) return "";
-    if (url.startsWith("http")) return url;
-    if (url.startsWith("#")) return url;
-    return API_BASE + url;
+  if (!url) return "";
+
+  const s = String(url).trim();
+
+  // already absolute
+  if (
+    s.startsWith("http://") ||
+    s.startsWith("https://")
+  ) {
+    return s;
   }
+
+  // preserve encoded asset paths exactly
+  if (s.startsWith("/")) {
+    return API_BASE + s;
+  }
+
+  return API_BASE + "/" + s.replace(/^\/+/, "");
+}
 
   function esc(str) {
     return String(str || "")
