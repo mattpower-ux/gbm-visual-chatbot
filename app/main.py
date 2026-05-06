@@ -1841,5 +1841,19 @@ async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depend
 ASSETS_DIR = Path("/data/assets")
 (ASSETS_DIR / "thumbs").mkdir(parents=True, exist_ok=True)
 (ASSETS_DIR / "covers").mkdir(parents=True, exist_ok=True)
+
+# === Backup Download Endpoint ===
+@app.get("/download-backup")
+async def download_backup():
+    backup_path = Path("/home/render/project/src/gbm-full-backup.tar.gz")
+
+    if not backup_path.exists():
+        return {"error": "Backup file not found"}
+
+    return FileResponse(
+        path=str(backup_path),
+        filename="gbm-full-backup.tar.gz",
+        media_type="application/gzip"
+    )
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
