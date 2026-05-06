@@ -1061,70 +1061,195 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
 
 
 
+def _score_magazine_chunk_for_query(chunk: dict[str, Any], question: str) -> float:
+    """Lightweight keyword score for magazine/PDF card fallback search."""
+    query_terms = [
+        term for term in re.findall(r"[a-z0-9]{3,}", (question or "").lower())
+        if term not in {
+            "the", "and", "for", "with", "from", "that", "this", "what", "how",
+            "why", "are", "was", "were", "about", "home", "homes", "green",
+            "builder", "media"
+        }
+    ]
+
+    haystack = " ".join(
+        str(chunk.get(key, "") or "")
+        for key in ("title", "source_name", "pdf_filename", "pdf_issue", "text", "url")
+    ).lower()
+
+    score = 0.0
+    for term in query_terms:
+        if term in haystack:
+            score += 1.0
+        if term in str(chunk.get("title", "") or "").lower():
+            score += 2.0
+        if term in str(chunk.get("source_name", "") or "").lower():
+            score += 2.0
+
+    # Phrase boosts for common editorial topics that appear in magazine archives.
+    q_lower = (question or "").lower()
+    for phrase in (
+        "home electrification", "electrification", "heat pump", "solar",
+        "resilience", "net zero", "decarbonization", "remodeling", "energy"
+    ):
+        if phrase in q_lower and phrase in haystack:
+            score += 5.0
+
+    # Prefer chunks with enough text to indicate a real OCR/index hit.
+    if len(str(chunk.get("text", "") or "")) > 120:
+        score += 0.5
+
+    return score
+
+
+def _magazine_card_from_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a magazine/PDF chunk into a UI card with cover fields populated."""
+    url = str(chunk.get("url", "") or "").strip()
+    filename = str(chunk.get("pdf_filename", "") or "").strip()
+
+    if not url and filename:
+        url = f"/magazines/{filename}"
+
+    if not url:
+        return None
+
+    title = (
+        chunk.get("source_name")
+        or chunk.get("title")
+        or chunk.get("pdf_filename")
+        or "Green Builder Magazine Archive"
+    )
+
+    cover = _magazine_cover_for_url(url, chunk)
+
+    return {
+        "title": str(title),
+        "url": url,
+        "cover": cover,
+        "image": cover,
+        "thumbnail": cover,
+        "thumbnail_url": cover,
+        "issue": chunk.get("source_name") or "Magazine archive",
+        "page": chunk.get("page"),
+        "type": "pdf",
+        "source": "Green Builder Magazine",
+        "excerpt": str(chunk.get("text", "") or "")[:240].strip(),
+    }
+
+
+def _direct_lancedb_magazine_card_search(question: str, limit: int = 2) -> list[dict[str, Any]]:
+    """Fallback: scan indexed magazine chunks directly when normal retrieval misses PDFs."""
+    try:
+        import lancedb
+
+        db = lancedb.connect("/data/lancedb")
+        table = db.open_table("greenbuilder_chunks")
+        df = table.to_pandas()
+    except Exception as exc:
+        print(f"Direct magazine card scan failed: {exc}")
+        return []
+
+    if df is None or len(df) == 0:
+        return []
+
+    chunks = df.to_dict(orient="records")
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    for chunk in chunks:
+        if not _is_magazine_chunk(chunk):
+            continue
+        score = _score_magazine_chunk_for_query(chunk, question)
+        if score > 0:
+            scored.append((score, chunk))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    cards: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for _, chunk in scored:
+        card = _magazine_card_from_chunk(chunk)
+        if not card:
+            continue
+        url = str(card.get("url", ""))
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        cards.append(card)
+        if len(cards) >= limit:
+            break
+
+    return cards
+
+
 def search_magazine_pdf_cards(question: str, limit: int = 2) -> list[dict[str, Any]]:
-    """Run a separate retrieval pass to surface relevant magazine/PDF cards for the UI.
+    """Dedicated magazine/PDF retrieval pass for visual cards.
 
     This does not change answer generation. It only ensures the visual UI can
-    show magazine/PDF resources even when blogs or webpages dominate the main
-    answer context.
+    surface relevant magazine/PDF resources even when blogs or webpages dominate
+    the main answer context.
     """
     if not question:
         return []
 
     try:
-        more_chunks = search(question)
+        try:
+            more_chunks = search(question, limit=24)
+        except TypeError:
+            more_chunks = search(question)
         more_chunks = _apply_smart_ranking(more_chunks, question)
     except Exception as exc:
         print(f"PDF card search failed: {exc}")
-        return []
+        more_chunks = []
 
     pdf_cards: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
 
     for chunk in more_chunks or []:
-        if not _is_magazine_chunk(chunk):
-            continue
-
         url = str(chunk.get("url", "") or "").strip()
         filename = str(chunk.get("pdf_filename", "") or "").strip()
+        source = str(chunk.get("source_name", "") or "")
+        title = str(chunk.get("title", "") or "")
 
-        if not url and filename:
-            url = f"/magazines/{filename}"
+        combined = f"{url} {filename} {source} {title}".lower()
+        is_magazine = (
+            _is_magazine_chunk(chunk)
+            or ".pdf" in combined
+            or "/magazines/" in combined
+            or "magazine" in combined
+            or filename.lower().endswith(".pdf")
+        )
 
-        if not url or url in seen_urls:
+        if not is_magazine:
             continue
 
-        seen_urls.add(url)
+        card = _magazine_card_from_chunk(chunk)
+        if not card:
+            continue
 
-        title = (
-            chunk.get("source_name")
-            or chunk.get("title")
-            or chunk.get("pdf_filename")
-            or "Green Builder Magazine Archive"
-        )
+        card_url = str(card.get("url", ""))
+        if not card_url or card_url in seen_urls:
+            continue
 
-        cover = _magazine_cover_for_url(url, chunk)
-
-        pdf_cards.append(
-            {
-                "title": str(title),
-                "url": url,
-                "cover": cover,
-                "image": cover,
-                "thumbnail_url": cover,
-                "issue": chunk.get("source_name") or "Magazine archive",
-                "page": chunk.get("page"),
-                "type": "pdf",
-                "source": "Green Builder Magazine",
-                "excerpt": str(chunk.get("text", ""))[:240].strip(),
-            }
-        )
+        seen_urls.add(card_url)
+        pdf_cards.append(card)
 
         if len(pdf_cards) >= limit:
             break
 
-    return pdf_cards
+    # If semantic retrieval did not surface PDFs, scan indexed magazine chunks directly.
+    if len(pdf_cards) < limit:
+        for card in _direct_lancedb_magazine_card_search(question, limit=limit):
+            card_url = str(card.get("url", ""))
+            if not card_url or card_url in seen_urls:
+                continue
+            seen_urls.add(card_url)
+            pdf_cards.append(card)
+            if len(pdf_cards) >= limit:
+                break
 
+    print(f"Magazine cards found: {len(pdf_cards)}")
+    return pdf_cards
 
 def _build_key_insights(answer: str) -> list[dict[str, str]]:
     """Create lightweight insight cards from the generated answer."""
