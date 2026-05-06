@@ -105,7 +105,6 @@
 
   root.innerHTML = `
   <style>
-
     .gbm-launcher {
       position: fixed;
       bottom: 20px;
@@ -657,13 +656,19 @@
   }
 
   function isPdfCard(card) {
-    const t = String(card.type || card.source_type || "").toLowerCase();
+    const t = String(card.type || card.source_type || card.attribution_label || card.source || "").toLowerCase();
     const u = String(card.url || "").toLowerCase();
+    const title = String(card.title || "").toLowerCase();
+
     return (
       t === "pdf" ||
       t === "magazine" ||
+      t.includes("magazine") ||
+      t.includes("pdf") ||
       u.includes(".pdf") ||
-      u.includes("/magazines/")
+      u.includes("/magazines/") ||
+      title.includes("(pdf") ||
+      title.includes("magazine")
     );
   }
 
@@ -863,10 +868,26 @@
     lastPayload = payload;
 
     const allCards = payload.cards || [];
+    const allSources = payload.sources || [];
 
     const pdfCardsFromCards = allCards.filter(isPdfCard);
+    const pdfCardsFromSources = allSources
+      .filter(isPdfCard)
+      .map(s => ({
+        title: s.title,
+        url: s.url,
+        image: s.image || s.thumbnail || s.thumbnail_url || s.cover,
+        cover: s.cover || s.image || s.thumbnail || s.thumbnail_url,
+        source: s.attribution_label || s.source || "Green Builder Magazine",
+        type: "pdf",
+        page: s.page,
+        excerpt: s.excerpt
+      }));
+
     const videoCardsFromCards = allCards.filter(isVideoCard);
+    const videoCardsFromSources = allSources.filter(isVideoCard);
     const podcastCardsFromCards = allCards.filter(isPodcastCard);
+    const podcastCardsFromSources = allSources.filter(isPodcastCard);
 
     const articles =
       allCards.filter(c => {
@@ -874,20 +895,23 @@
       });
 
     const pdfs =
-      dedupeByUrl([]
+      dedupeByUrl([])
         .concat(payload.magazines || [])
         .concat(payload.pdfs || [])
-        .concat(pdfCardsFromCards));
+        .concat(pdfCardsFromCards)
+        .concat(pdfCardsFromSources);
 
     const videos =
-      dedupeByUrl([]
+      dedupeByUrl([])
         .concat(payload.videos || [])
-        .concat(videoCardsFromCards));
+        .concat(videoCardsFromCards)
+        .concat(videoCardsFromSources);
 
     const podcasts =
-      dedupeByUrl([]
+      dedupeByUrl([])
         .concat(payload.podcasts || [])
-        .concat(podcastCardsFromCards));
+        .concat(podcastCardsFromCards)
+        .concat(podcastCardsFromSources);
 
     messages.innerHTML = `
 
