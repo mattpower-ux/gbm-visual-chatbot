@@ -748,15 +748,24 @@
     `;
   }
 
-  function pdfCoverFromUrl(url) {
-    if (!url) return "/assets/covers/fallback-magazine.jpg";
+ function pdfCoverFromUrl(url) {
+  if (!url) return "/assets/covers/fallback-magazine.jpg";
 
-    const raw = String(url).trim();
+  const raw = String(url)
+    .split("/magazines/")
+    .pop()
+    .split("?")[0]
+    .split("#")[0]
+    .replace(/\.pdf$/i, "");
 
-    if (!raw.includes("/magazines/")) {
-      return "/assets/covers/fallback-magazine.jpg";
-    }
+  const decoded = decodeURIComponent(raw);
 
+  const hyphenName = decoded
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") + ".jpg";
+
+  return "/assets/covers/" + hyphenName;
+}
     const clean = raw
       .split("/magazines/")
       .pop()
