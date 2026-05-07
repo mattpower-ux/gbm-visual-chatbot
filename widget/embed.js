@@ -766,15 +766,6 @@
 
   return "/assets/covers/" + hyphenName;
 }
-    const clean = raw
-      .split("/magazines/")
-      .pop()
-      .split("?")[0]
-      .split("#")[0]
-      .replace(/\.pdf$/i, ".jpg");
-
-    return "/assets/covers/" + clean;
-  }
 
   function renderCard(type, item) {
     const isVideo = type === "video" || type === "podcast";
