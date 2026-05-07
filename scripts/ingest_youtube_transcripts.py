@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
+
 import json
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 import lancedb
-import pyarrow as pa
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
@@ -17,7 +21,7 @@ from youtube_transcript_api._errors import (
 )
 
 from app.config import get_settings
-from app.build_index import chunk_text, build_embed_text, embed_batch_with_retry
+from app.build_index import build_embed_text, embed_batch_with_retry
 
 TABLE_NAME = "greenbuilder_chunks"
 
