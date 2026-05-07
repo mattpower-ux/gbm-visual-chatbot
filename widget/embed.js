@@ -26,25 +26,23 @@
   let currentMode = "visual";
 
   function abs(url) {
-  if (!url) return "";
+    if (!url) return "";
 
-  const s = String(url).trim();
+    const s = String(url).trim();
 
-  // already absolute
-  if (
-    s.startsWith("http://") ||
-    s.startsWith("https://")
-  ) {
-    return s;
+    if (
+      s.startsWith("http://") ||
+      s.startsWith("https://")
+    ) {
+      return s;
+    }
+
+    if (s.startsWith("/")) {
+      return API_BASE + s;
+    }
+
+    return API_BASE + "/" + s.replace(/^\/+/, "");
   }
-
-  // preserve encoded asset paths exactly
-  if (s.startsWith("/")) {
-    return API_BASE + s;
-  }
-
-  return API_BASE + "/" + s.replace(/^\/+/, "");
-}
 
   function esc(str) {
     return String(str || "")
@@ -528,7 +526,6 @@
     }
 
     @media (max-width: 800px) {
-
       .gbm-panel {
         inset: 0;
         width: auto;
@@ -553,7 +550,6 @@
         max-width: 92%;
       }
     }
-
   </style>
 
   <div class="gbm-launcher">GBM DEEP THINK</div>
@@ -752,6 +748,25 @@
     `;
   }
 
+  function pdfCoverFromUrl(url) {
+    if (!url) return "/assets/covers/fallback-magazine.jpg";
+
+    const raw = String(url).trim();
+
+    if (!raw.includes("/magazines/")) {
+      return "/assets/covers/fallback-magazine.jpg";
+    }
+
+    const clean = raw
+      .split("/magazines/")
+      .pop()
+      .split("?")[0]
+      .split("#")[0]
+      .replace(/\.pdf$/i, ".jpg");
+
+    return "/assets/covers/" + clean;
+  }
+
   function renderCard(type, item) {
     const isVideo = type === "video" || type === "podcast";
     const yid = isVideo ? youtubeId(item.url || item.source_url || "") : "";
@@ -761,15 +776,21 @@
         ? "/assets/covers/fallback-magazine.jpg"
         : "/assets/thumbs/fallback-article.jpg";
 
+    const url = item.url || item.source_url || "#";
+
     const img =
-      item.image ||
-      item.thumbnail ||
-      item.thumbnail_url ||
-      item.cover ||
-      item.remote_image ||
-      (yid
-        ? "https://img.youtube.com/vi/" + yid + "/hqdefault.jpg"
-        : fallback);
+      type === "pdf"
+        ? pdfCoverFromUrl(url)
+        : (
+            item.image ||
+            item.thumbnail ||
+            item.thumbnail_url ||
+            item.cover ||
+            item.remote_image ||
+            (yid
+              ? "https://img.youtube.com/vi/" + yid + "/hqdefault.jpg"
+              : fallback)
+          );
 
     const source =
       item.source ||
@@ -781,8 +802,6 @@
         : type === "video"
         ? "Green Builder Media YouTube"
         : "Green Builder Media");
-
-    const url = item.url || item.source_url || "#";
 
     return `
       <div class="gbm-card">
@@ -927,58 +946,58 @@
         .concat(podcastCardsFromCards)
         .concat(podcastCardsFromSources);
 
-messages.innerHTML = `
-  ${renderQuestion(question)}
+    messages.innerHTML = `
+      ${renderQuestion(question)}
 
-  <div class="gbm-answer-wrap">
-    <div class="gbm-avatar">GBM</div>
+      <div class="gbm-answer-wrap">
+        <div class="gbm-avatar">GBM</div>
 
-    <div class="gbm-answer">
-      ${esc(payload.visual_summary || payload.answer || "")
-        .replace(/\n/g,"<br>")}
-    </div>
-  </div>
+        <div class="gbm-answer">
+          ${esc(payload.visual_summary || payload.answer || "")
+            .replace(/\n/g,"<br>")}
+        </div>
+      </div>
 
-  <div class="gbm-toggle">
-    DIVE DEEPER WITH TEXT ONLY
-  </div>
+      <div class="gbm-toggle">
+        DIVE DEEPER WITH TEXT ONLY
+      </div>
 
-  ${renderInsights(payload)}
+      ${renderInsights(payload)}
 
-  <div class="gbm-grid">
+      <div class="gbm-grid">
 
-    ${renderColumn(
-      "Articles",
-      "article",
-      articles,
-      "No related article cards were returned for this query."
-    )}
+        ${renderColumn(
+          "Articles",
+          "article",
+          articles,
+          "No related article cards were returned for this query."
+        )}
 
-    ${renderColumn(
-      "PDFs & Guides",
-      "pdf",
-      pdfs,
-      "No related PDF or guide cards were returned for this query."
-    )}
+        ${renderColumn(
+          "PDFs & Guides",
+          "pdf",
+          pdfs,
+          "No related PDF or guide cards were returned for this query."
+        )}
 
-    ${renderColumn(
-      "Videos",
-      "video",
-      videos,
-      "Video results will appear here once the GBM YouTube index is connected."
-    )}
+        ${renderColumn(
+          "Videos",
+          "video",
+          videos,
+          "Video results will appear here once the GBM YouTube index is connected."
+        )}
 
-    ${renderColumn(
-      "Podcasts",
-      "podcast",
-      podcasts,
-      "Podcast results will appear here once the GBM podcast playlist is indexed."
-    )}
+        ${renderColumn(
+          "Podcasts",
+          "podcast",
+          podcasts,
+          "Podcast results will appear here once the GBM podcast playlist is indexed."
+        )}
 
-  </div>
+      </div>
 
-  ${renderRecommended(articles.slice(2))}
-`;
+      ${renderRecommended(articles.slice(2))}
+    `;
 
     const toggle = messages.querySelector(".gbm-toggle");
     if (toggle) {
