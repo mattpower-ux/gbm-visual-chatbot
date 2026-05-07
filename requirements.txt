@@ -16,5 +16,6 @@ python-multipart
 pypdf
 pillow
 requests
+yt-dlp
 youtube-transcript-api
 PyMuPDF
