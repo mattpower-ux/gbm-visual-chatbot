@@ -80,13 +80,30 @@ def seconds_from_timestamp(raw: str) -> float:
 
 def fetch_transcript_api(video_id: str) -> list[dict[str, Any]]:
     try:
-        return YouTubeTranscriptApi.get_transcript(
+        api = YouTubeTranscriptApi()
+
+        transcript = api.fetch(
             video_id,
             languages=["en", "en-US", "en-GB"],
         )
+
+        rows: list[dict[str, Any]] = []
+
+        for item in transcript:
+            rows.append(
+                {
+                    "text": clean_text(getattr(item, "text", "")),
+                    "start": float(getattr(item, "start", 0.0)),
+                    "duration": float(getattr(item, "duration", 0.0)),
+                }
+            )
+
+        return rows
+
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as exc:
         print(f"No public transcript API rows for {video_id}: {exc}")
         return []
+
     except Exception as exc:
         print(f"Transcript API failed for {video_id}: {exc}")
         return []
@@ -286,20 +303,15 @@ def transcribe_audio_with_openai(video_id: str) -> list[dict[str, Any]]:
     return []
 
 
-def get_best_transcript(video_id: str, whisper_budget: dict[str, int]) -> tuple[list[dict[str, Any]], str]:
+def get_best_transcript(
+    video_id: str,
+    whisper_budget: dict[str, int]
+) -> tuple[list[dict[str, Any]], str]:
+
     rows = fetch_transcript_api(video_id)
+
     if rows:
         return rows, "youtube_transcript_api"
-
-    rows = fetch_transcript_ytdlp_captions(video_id)
-    if rows:
-        return rows, "yt_dlp_captions"
-
-    if ENABLE_WHISPER_FALLBACK and whisper_budget["used"] < MAX_WHISPER_VIDEOS_PER_RUN:
-        whisper_budget["used"] += 1
-        rows = transcribe_audio_with_openai(video_id)
-        if rows:
-            return rows, "openai_whisper"
 
     return [], "none"
 
