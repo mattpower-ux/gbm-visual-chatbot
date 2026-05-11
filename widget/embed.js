@@ -11,7 +11,11 @@
 
   const CHATBOT_TITLE =
     currentScript?.dataset.chatbotTitle ||
-    "GBM Deep Think";
+    "COGNITION Deep Dive";
+
+  const COGNITION_LOGO_URL =
+    currentScript?.dataset.logoUrl ||
+    "https://www.greenbuildermedia.com/hs-fs/hubfs/COGNITION/GBM-Cognition-2021-logo-web.png?width=800&height=364&name=GBM-Cognition-2021-logo-web.png";
 
   const GBM_YOUTUBE_CHANNEL =
     "https://www.youtube.com/user/greenbuildermedia";
@@ -27,13 +31,9 @@
 
   function abs(url) {
     if (!url) return "";
-
     const s = String(url).trim();
 
-    if (
-      s.startsWith("http://") ||
-      s.startsWith("https://")
-    ) {
+    if (s.startsWith("http://") || s.startsWith("https://")) {
       return s;
     }
 
@@ -122,15 +122,36 @@
       bottom: 20px;
       right: 20px;
       z-index: 999999;
-      background: #007565;
+      background: #0087a7;
       color: white;
       border-radius: 999px;
-      padding: 14px 22px;
+      padding: 9px 18px 9px 10px;
       font-family: Arial, sans-serif;
       font-weight: 900;
       letter-spacing: .04em;
       cursor: pointer;
       box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .gbm-launcher-logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      overflow: hidden;
+      background: rgba(255,255,255,.12);
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .gbm-launcher-logo img {
+      width: 96px;
+      height: 44px;
+      object-fit: cover;
+      object-position: left center;
+      display: block;
     }
 
     .gbm-panel {
@@ -153,7 +174,7 @@
     }
 
     .gbm-header {
-      background: linear-gradient(135deg,#007565,#005447);
+      background: linear-gradient(135deg,#0087a7,#006d86);
       color: white;
       padding: 18px 24px;
       display: flex;
@@ -169,16 +190,58 @@
     }
 
     .gbm-mark {
-      width: 38px;
-      height: 38px;
-      border-radius: 50%;
-      background: rgba(255,255,255,.18);
+      width: 72px;
+      height: 52px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.12);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 900;
-      font-size: 12px;
-      letter-spacing: .02em;
+      overflow: hidden;
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .gbm-mark img {
+      width: 118px;
+      height: 52px;
+      object-fit: cover;
+      object-position: left center;
+      display: block;
+    }
+
+    .gbm-mark::after,
+    .gbm-launcher-logo::after,
+    .gbm-avatar::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        110deg,
+        transparent 0%,
+        transparent 33%,
+        rgba(255,255,255,.82) 46%,
+        rgba(245,190,35,.95) 52%,
+        transparent 68%,
+        transparent 100%
+      );
+      transform: translateX(-140%);
+      animation: cognition-current 1.45s ease-out .35s 1 forwards;
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    @keyframes cognition-current {
+      to { transform: translateX(140%); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .gbm-mark::after,
+      .gbm-launcher-logo::after,
+      .gbm-avatar::after {
+        animation: none;
+        display: none;
+      }
     }
 
     .gbm-title {
@@ -247,10 +310,10 @@
     }
 
     .gbm-avatar {
-      width: 46px;
-      height: 46px;
+      width: 50px;
+      height: 50px;
       border-radius: 50%;
-      background: #007565;
+      background: #0087a7;
       color: white;
       display: flex;
       align-items: center;
@@ -259,6 +322,16 @@
       font-size: 12px;
       letter-spacing: .02em;
       flex: 0 0 auto;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .gbm-avatar img {
+      width: 110px;
+      height: 50px;
+      object-fit: cover;
+      object-position: left center;
+      display: block;
     }
 
     .gbm-answer {
@@ -272,7 +345,7 @@
     }
 
     .gbm-answer a {
-      color: #007565;
+      color: #0087a7;
       text-decoration: none;
       font-weight: 800;
     }
@@ -280,7 +353,7 @@
     .gbm-toggle {
       margin-top: 18px;
       margin-left: 60px;
-      color: #007565;
+      color: #0087a7;
       font-size: 13px;
       font-weight: 900;
       text-transform: uppercase;
@@ -292,7 +365,7 @@
       margin-top: 24px;
       margin-bottom: 12px;
       margin-left: 60px;
-      color: #007565;
+      color: #0087a7;
       font-size: 14px;
       font-weight: 900;
       letter-spacing: .06em;
@@ -331,7 +404,7 @@
       height: 28px;
       border-radius: 50%;
       background: #e6f3ee;
-      color: #007565;
+      color: #0087a7;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -387,9 +460,9 @@
     .gbm-button {
       width: 100%;
       border-radius: 999px;
-      border: 1px solid #007565;
+      border: 1px solid #0087a7;
       background: white;
-      color: #007565;
+      color: #0087a7;
       font-size: 12px;
       font-weight: 900;
       padding: 8px 10px;
@@ -487,7 +560,7 @@
       height: 48px;
       border-radius: 999px;
       border: 0;
-      background: #007565;
+      background: #0087a7;
       color: white;
       cursor: pointer;
       font-weight: 900;
@@ -552,13 +625,20 @@
     }
   </style>
 
-  <div class="gbm-launcher">GBM DEEP THINK</div>
+  <div class="gbm-launcher">
+    <span class="gbm-launcher-logo">
+      <img src="${esc(COGNITION_LOGO_URL)}" alt="">
+    </span>
+    <span>COGNITION DEEP DIVE</span>
+  </div>
 
   <div class="gbm-panel">
 
     <div class="gbm-header">
       <div class="gbm-header-left">
-        <div class="gbm-mark">GBM</div>
+        <div class="gbm-mark">
+          <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
+        </div>
         <div class="gbm-title">${esc(CHATBOT_TITLE)}</div>
       </div>
 
@@ -606,7 +686,7 @@
 
   closeBtn.onclick = () => {
     panel.style.display = "none";
-    launcher.style.display = "block";
+    launcher.style.display = "flex";
   };
 
   function renderQuestion(q) {
@@ -748,24 +828,24 @@
     `;
   }
 
- function pdfCoverFromUrl(url) {
-  if (!url) return "/assets/covers/fallback-magazine.jpg";
+  function pdfCoverFromUrl(url) {
+    if (!url) return "/assets/covers/fallback-magazine.jpg";
 
-  const raw = String(url)
-    .split("/magazines/")
-    .pop()
-    .split("?")[0]
-    .split("#")[0]
-    .replace(/\.pdf$/i, "");
+    const raw = String(url)
+      .split("/magazines/")
+      .pop()
+      .split("?")[0]
+      .split("#")[0]
+      .replace(/\.pdf$/i, "");
 
-  const decoded = decodeURIComponent(raw);
+    const decoded = decodeURIComponent(raw);
 
-  const hyphenName = decoded
-    .replace(/[^A-Za-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") + ".jpg";
+    const hyphenName = decoded
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") + ".jpg";
 
-  return "/assets/covers/" + hyphenName;
-}
+    return "/assets/covers/" + hyphenName;
+  }
 
   function renderCard(type, item) {
     const isVideo = type === "video" || type === "podcast";
@@ -950,7 +1030,9 @@
       ${renderQuestion(question)}
 
       <div class="gbm-answer-wrap">
-        <div class="gbm-avatar">GBM</div>
+        <div class="gbm-avatar">
+          <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
+        </div>
 
         <div class="gbm-answer">
           ${esc(payload.visual_summary || payload.answer || "")
@@ -1017,7 +1099,7 @@
       <div class="gbm-answer-wrap">
 
         <div class="gbm-avatar">
-          GBM
+          <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
         </div>
 
         <div class="gbm-answer">
@@ -1051,7 +1133,7 @@
       <div class="gbm-answer-wrap">
 
         <div class="gbm-avatar">
-          GBM
+          <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
         </div>
 
         <div class="gbm-answer">
@@ -1095,7 +1177,7 @@
         <div class="gbm-answer-wrap">
 
           <div class="gbm-avatar">
-            GBM
+            <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
           </div>
 
           <div class="gbm-answer">
