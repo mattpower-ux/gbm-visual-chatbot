@@ -11,7 +11,7 @@
 
   const CHATBOT_TITLE =
     currentScript?.dataset.chatbotTitle ||
-    "COGNITION Deep Dive";
+    "COGNITION DeepDive";
 
   const COGNITION_LOGO_URL =
     currentScript?.dataset.logoUrl ||
@@ -629,7 +629,7 @@
     <span class="gbm-launcher-logo">
       <img src="${esc(COGNITION_LOGO_URL)}" alt="">
     </span>
-    <span>COGNITION DEEP DIVE</span>
+    <span>COGNITION DeepDive</span>
   </div>
 
   <div class="gbm-panel">
@@ -650,9 +650,7 @@
     <div class="gbm-messages">
 
       <div class="gbm-welcome">
-        Ask us anything about sustainable building, electrification,
-        resilience, housing trends, products, climate tech,
-        or Green Builder Media research.
+       Ask anything: Tap the power of our exclusive COGNITION SmartData, combining new research with 25 years of expertise in sustainable building.
       </div>
 
     </div>
