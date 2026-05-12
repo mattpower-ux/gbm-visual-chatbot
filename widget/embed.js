@@ -887,7 +887,7 @@
         ${renderColumn("Podcasts", "podcast", podcasts, "Podcast results will appear here once the GBM podcast playlist is indexed.")}
       </div>
 
-      ${renderRecommended(articles.slice(2))}
+      ${renderRecommended([])}
     `;
 
     const toggle = messages.querySelector(".gbm-toggle");
