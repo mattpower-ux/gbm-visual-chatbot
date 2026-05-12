@@ -669,7 +669,7 @@
   }
 
   function renderColumn(title, type, items, emptyText) {
-    const visible = dedupeByUrl(items || []).slice(0,2);
+    const visible = dedupeByUrl(items || []).slice(0,1);
 
     return `
       <div class="gbm-column">
