@@ -306,9 +306,8 @@
     <div class="gbm-messages">
 
       <div class="gbm-welcome">
-        Make your query, and tap the power of our exclusive
-        COGNITION SmartData, combining new research with
-        25 years of expertise in sustainable building.
+        Tap the power of COGNITION SmartData, combining our latest research with
+        25 years of expertise in sustainable planning, building and products.
       </div>
 
     </div>
