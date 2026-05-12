@@ -77,24 +77,53 @@ def image_looks_like_data_graphic(img_url: str, alt: str, nearby_text: str) -> b
     blob = " ".join([img_url, alt, nearby_text]).lower()
 
     reject_terms = [
-        "logo",
-        "headshot",
-        "author",
-        "avatar",
-        "profile",
-        "facebook",
-        "twitter",
-        "linkedin",
-        "instagram",
-        "youtube",
-        "icon",
-        "button",
-        "ad-",
-        "advertisement",
-        "sponsor",
-        "hero",
-        "thumbnail",
-    ]
+    "logo",
+    "headshot",
+    "author",
+    "avatar",
+    "profile",
+    "facebook",
+    "twitter",
+    "linkedin",
+    "instagram",
+    "youtube",
+    "icon",
+    "button",
+    "ad-",
+    "advertisement",
+    "sponsor",
+    "hero",
+    "thumbnail",
+
+    # Product award imagery
+    "sustainable product of the year",
+    "product of the year",
+    "award winner",
+    "winner",
+    "best product",
+    "top product",
+
+    # Brand index scorecards / logos
+    "sustainable brand index",
+    "brand index",
+    "brand survey",
+    "brand rankings",
+    "manufacturer rankings",
+
+    # Typical non-chart photography
+    "kitchen",
+    "bathroom",
+    "window",
+    "hvac",
+    "heat pump",
+    "solar panel",
+    "roofing",
+    "appliance",
+    "home exterior",
+    "builder",
+    "family",
+    "living room",
+]
 
     prefer_terms = [
         "chart",
