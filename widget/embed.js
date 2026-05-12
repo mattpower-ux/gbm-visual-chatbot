@@ -244,16 +244,17 @@
       font-weight: 800;
     }
 
-    .gbm-toggle {
-      margin-top: 18px;
-      margin-left: 60px;
-      color: #0087a7;
-      font-size: 13px;
-      font-weight: 900;
-      text-transform: uppercase;
-      letter-spacing: .06em;
-      cursor: pointer;
-    }
+.gbm-toggle {
+  margin-top: 10px;
+  margin-left: 66px;
+  margin-bottom: 18px;
+  color: #0087a7;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  cursor: pointer;
+}
 
     .gbm-hot-take {
       margin-left: 60px;
