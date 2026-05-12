@@ -17,11 +17,12 @@
     currentScript?.dataset.logoUrl ||
     "https://www.greenbuildermedia.com/hubfs/Cognition%20DeepDive%20Images/cognition%20button.png";
 
-  const GBM_YOUTUBE_CHANNEL =
-    "https://www.youtube.com/user/greenbuildermedia";
+  const COGNITION_SMART_DATA_URL =
+    "https://www.greenbuildermedia.com/cognition-smart-data";
 
-  const GBM_PODCAST_PLAYLIST =
-    "https://youtube.com/playlist?list=PLwQAcwOzaQyfAMZ7xA2Mz2acdLVauKFlV&si=vTbLmV5EuNhVcZy-";
+  const COGNITION_FALLBACK_CHART_URL =
+    currentScript?.dataset.hotTakeImage ||
+    "https://www.greenbuildermedia.com/hubfs/Cognition%20DeepDive%20Images/cognition%20button.png";
 
   const root = document.createElement("div");
   document.body.appendChild(root);
@@ -51,9 +52,6 @@
       pdf: `<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5"/><path d="M8 15h2"/><path d="M13 15h2"/></svg>`,
       video: `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>`,
       podcast: `<svg viewBox="0 0 24 24"><circle cx="12" cy="11" r="3"/><path d="M6 11a6 6 0 0 1 12 0"/><path d="M12 14v7"/><path d="M9.5 21h5"/></svg>`,
-      insight: `<svg viewBox="0 0 24 24"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.7.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>`,
-      check: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>`,
-      info: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>`,
       close: `<svg viewBox="0 0 24 24"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>`
     };
     return icons[type] || "";
@@ -257,6 +255,109 @@
       cursor: pointer;
     }
 
+    .gbm-hot-take {
+      margin-left: 60px;
+      margin-top: 22px;
+      margin-bottom: 28px;
+      background: white;
+      border: 1px solid #dce5e2;
+      border-radius: 18px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.04);
+      overflow: hidden;
+    }
+
+    .gbm-hot-take-inner {
+      display: grid;
+      grid-template-columns: minmax(0,.95fr) minmax(280px,1.05fr);
+      align-items: stretch;
+    }
+
+    .gbm-hot-copy {
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .gbm-hot-kicker {
+      color: #0087a7;
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 10px;
+    }
+
+    .gbm-hot-title {
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 900;
+      color: #163d35;
+      margin-bottom: 12px;
+    }
+
+    .gbm-hot-caption {
+      font-size: 14px;
+      line-height: 1.55;
+      color: #44514d;
+      margin-bottom: 16px;
+    }
+
+    .gbm-hot-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 2px;
+    }
+
+    .gbm-hot-link {
+      border-radius: 999px;
+      border: 1px solid #0087a7;
+      background: white;
+      color: #0087a7;
+      font-size: 12px;
+      font-weight: 900;
+      padding: 9px 13px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .gbm-hot-link-primary {
+      background: #0087a7;
+      color: white;
+    }
+
+    .gbm-hot-image-wrap {
+      background: #edf5f2;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .gbm-hot-image {
+      width: 100%;
+      max-height: 360px;
+      object-fit: contain;
+      border-radius: 12px;
+      background: white;
+      display: block;
+      box-shadow: 0 8px 24px rgba(0,0,0,.06);
+    }
+
+    .gbm-expand-image {
+      align-self: flex-end;
+      color: #0087a7;
+      font-size: 12px;
+      font-weight: 900;
+      text-decoration: none;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
     .gbm-section-title {
       margin-top: 24px;
       margin-bottom: 12px;
@@ -370,68 +471,6 @@
       box-sizing: border-box;
     }
 
-    .gbm-insights {
-      display: grid;
-      grid-template-columns: repeat(3,minmax(0,1fr));
-      gap: 14px;
-      margin-left: 60px;
-      margin-bottom: 26px;
-    }
-
-    .gbm-insight {
-      background: white;
-      border-radius: 16px;
-      border: 1px solid #dce5e2;
-      padding: 16px;
-      display: flex;
-      gap: 12px;
-      box-shadow: 0 8px 24px rgba(0,0,0,.04);
-    }
-
-    .gbm-insight-copy strong {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 14px;
-    }
-
-    .gbm-insight-copy {
-      font-size: 13px;
-      line-height: 1.45;
-      color: #44514d;
-    }
-
-    .gbm-recommended {
-      display: grid;
-      grid-template-columns: repeat(4,minmax(0,1fr));
-      gap: 14px;
-      margin-left: 60px;
-      margin-bottom: 26px;
-    }
-
-    .gbm-rec {
-      background: white;
-      border-radius: 16px;
-      overflow: hidden;
-      border: 1px solid #dce5e2;
-      text-decoration: none;
-      color: inherit;
-      box-shadow: 0 8px 24px rgba(0,0,0,.04);
-    }
-
-    .gbm-rec img {
-      width: 100%;
-      height: 130px;
-      object-fit: cover;
-      display: block;
-    }
-
-    .gbm-rec-title {
-      padding: 12px;
-      font-size: 13px;
-      line-height: 1.35;
-      font-weight: 900;
-    }
-
     .gbm-inputbar {
       background: white;
       border-top: 1px solid #dce5e2;
@@ -488,8 +527,7 @@
     }
 
     @media (max-width: 1100px) {
-      .gbm-grid,
-      .gbm-recommended {
+      .gbm-grid {
         grid-template-columns: repeat(2,minmax(0,1fr));
       }
     }
@@ -501,15 +539,16 @@
         border-radius: 0;
       }
 
-      .gbm-grid,
-      .gbm-recommended,
-      .gbm-insights {
+      .gbm-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .gbm-hot-take-inner {
         grid-template-columns: 1fr;
       }
 
       .gbm-grid,
-      .gbm-recommended,
-      .gbm-insights,
+      .gbm-hot-take,
       .gbm-section-title,
       .gbm-toggle {
         margin-left: 0;
@@ -582,28 +621,6 @@
     return `<div class="gbm-user">${esc(q)}</div>`;
   }
 
-  function renderInsights(data) {
-    const insights = data.key_insights || [];
-    if (!insights.length) return "";
-
-    return `
-      <div class="gbm-insights">
-        ${insights.slice(0,3).map((item, idx) => {
-          const iconName = idx === 0 ? "insight" : idx === 1 ? "check" : "info";
-          return `
-            <div class="gbm-insight">
-              <div class="gbm-icon">${icon(iconName)}</div>
-              <div class="gbm-insight-copy">
-                <strong>${esc(item.title || "Insight")}</strong>
-                ${esc(item.text || "")}
-              </div>
-            </div>
-          `;
-        }).join("")}
-      </div>
-    `;
-  }
-
   function youtubeId(url) {
     if (!url) return "";
     const watch = String(url).match(/[?&]v=([^&]+)/);
@@ -669,8 +686,8 @@
   }
 
   function renderColumn(title, type, items, emptyText) {
-    const visible = dedupeByUrl(items || []).slice(0,1);
-    
+    const visible = dedupeByUrl(items || []).slice(0, 1);
+
     return `
       <div class="gbm-column">
         <div class="gbm-column-header">
@@ -785,30 +802,88 @@
     `;
   }
 
-  function renderRecommended(cards) {
-    if (!cards || !cards.length) return "";
+  function twoParagraphAnswer(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+
+    const paragraphs = raw
+      .split(/\n\s*\n/)
+      .map(p => p.trim())
+      .filter(Boolean);
+
+    if (paragraphs.length >= 2) {
+      return paragraphs.slice(0, 2).join("\n\n");
+    }
+
+    return raw;
+  }
+
+  function firstUsableArticle(cards) {
+    return (cards || []).find(card => card && card.url && card.title) || null;
+  }
+
+  function renderHotTake(payload, articles) {
+    const hot = payload.hot_take || payload.hotTake || payload.cognition_hot_take || {};
+    const articleFallback = firstUsableArticle(articles);
+
+    const title =
+      hot.title ||
+      hot.article_title ||
+      hot.articleTitle ||
+      "COGNITION SmartData";
+
+    const articleUrl =
+      hot.article_url ||
+      hot.articleUrl ||
+      hot.url ||
+      (articleFallback ? articleFallback.url : COGNITION_SMART_DATA_URL);
+
+    const chartImage =
+      hot.chart_image ||
+      hot.chartImage ||
+      hot.image ||
+      hot.image_url ||
+      hot.thumbnail ||
+      hot.thumbnail_url ||
+      COGNITION_FALLBACK_CHART_URL;
+
+    const caption =
+      hot.caption ||
+      hot.summary ||
+      "COGNITION SmartData highlights the market signals, consumer behavior, and building-science trends behind this topic. As the Hot Take chart library is connected to the backend, this area will automatically display the most relevant data graphic for each query.";
 
     return `
-      <div class="gbm-section-title">RECOMMENDED READING</div>
+      <div class="gbm-hot-take">
+        <div class="gbm-hot-take-inner">
+          <div class="gbm-hot-copy">
+            <div class="gbm-hot-kicker">KEY INSIGHT</div>
+            <div class="gbm-hot-title">${esc(title)}</div>
+            <div class="gbm-hot-caption">${esc(caption)}</div>
 
-      <div class="gbm-recommended">
-        ${cards.slice(0,4).map(card => {
-          const img =
-            card.image ||
-            card.thumbnail ||
-            card.thumbnail_url ||
-            "/assets/thumbs/fallback-article.jpg";
+            <div class="gbm-hot-links">
+              <a class="gbm-hot-link gbm-hot-link-primary" href="${abs(articleUrl)}" target="_blank" rel="noopener">
+                Read full analysis ↗
+              </a>
+              <a class="gbm-hot-link" href="${COGNITION_SMART_DATA_URL}" target="_blank" rel="noopener">
+                More COGNITION insights ↗
+              </a>
+            </div>
+          </div>
 
-          return `
-            <a class="gbm-rec" href="${abs(card.url || "#")}" target="_blank" rel="noopener">
+          <div class="gbm-hot-image-wrap">
+            <a href="${abs(chartImage)}" target="_blank" rel="noopener">
               <img
-                src="${abs(img)}"
-                onerror="this.onerror=null;this.src='${abs('/assets/thumbs/fallback-article.jpg')}';"
+                class="gbm-hot-image"
+                src="${abs(chartImage)}"
+                onerror="this.onerror=null;this.src='${abs(COGNITION_FALLBACK_CHART_URL)}';"
+                alt="COGNITION data graphic"
               />
-              <div class="gbm-rec-title">${esc(card.title || "Untitled")}</div>
             </a>
-          `;
-        }).join("")}
+            <a class="gbm-expand-image" href="${abs(chartImage)}" target="_blank" rel="noopener">
+              Expand image ↗
+            </a>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -872,13 +947,13 @@
         </div>
 
         <div class="gbm-answer">
-          ${esc(payload.visual_summary || payload.answer || "").replace(/\n/g,"<br>")}
+          ${esc(twoParagraphAnswer(payload.visual_summary || payload.answer || "")).replace(/\n/g,"<br>")}
         </div>
       </div>
 
       <div class="gbm-toggle">DIVE DEEPER WITH TEXT ONLY</div>
 
-      ${renderInsights(payload)}
+      ${renderHotTake(payload, articles)}
 
       <div class="gbm-grid">
         ${renderColumn("Articles", "article", articles, "No related article cards were returned for this query.")}
@@ -886,8 +961,6 @@
         ${renderColumn("Videos", "video", videos, "Video results will appear here once the GBM YouTube index is connected.")}
         ${renderColumn("Podcasts", "podcast", podcasts, "Podcast results will appear here once the GBM podcast playlist is indexed.")}
       </div>
-
-      ${renderRecommended([])}
     `;
 
     const toggle = messages.querySelector(".gbm-toggle");
