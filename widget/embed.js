@@ -1,4 +1,6 @@
-(function () {
+const COGNITION_LOGO_URL =
+  currentScript?.dataset.logoUrl ||
+  "https://www.greenbuildermedia.com/hubfs/Cognition%20DeepDive%20Images/cognition%20button.png";(function () {
   if (window.GBM_DEEPTHINK_LOADED) return;
   window.GBM_DEEPTHINK_LOADED = true;
 
