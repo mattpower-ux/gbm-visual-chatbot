@@ -5,7 +5,6 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -64,6 +63,9 @@ def extract_category_article_urls(html: str, base_url: str) -> list[str]:
         if "/blog/topic/" in href:
             continue
 
+        if "/blog/author/" in href:
+            continue
+
         parsed = urlparse(href)
         clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
@@ -77,53 +79,59 @@ def image_looks_like_data_graphic(img_url: str, alt: str, nearby_text: str) -> b
     blob = " ".join([img_url, alt, nearby_text]).lower()
 
     reject_terms = [
-    "logo",
-    "headshot",
-    "author",
-    "avatar",
-    "profile",
-    "facebook",
-    "twitter",
-    "linkedin",
-    "instagram",
-    "youtube",
-    "icon",
-    "button",
-    "ad-",
-    "advertisement",
-    "sponsor",
-    "hero",
-    "thumbnail",
+        "logo",
+        "headshot",
+        "author",
+        "avatar",
+        "profile",
+        "facebook",
+        "twitter",
+        "linkedin",
+        "instagram",
+        "youtube",
+        "icon",
+        "button",
+        "ad-",
+        "advertisement",
+        "sponsor",
+        "hero",
+        "thumbnail",
 
-    # Product award imagery
-    "sustainable product of the year",
-    "product of the year",
-    "award winner",
-    "winner",
-    "best product",
-    "top product",
+        # Product award imagery
+        "sustainable product of the year",
+        "product of the year",
+        "award winner",
+        "winner",
+        "best product",
+        "top product",
 
-    # Brand index scorecards / logos
-    "sustainable brand index",
-    "brand index",
-    "brand survey",
-    "brand rankings",
-    "manufacturer rankings",
+        # Brand index scorecards / logos
+        "sustainable brand index",
+        "brand index",
+        "brand survey",
+        "brand rankings",
+        "manufacturer rankings",
 
-    # Typical non-chart photography
-    "kitchen",
-    "bathroom",
-    "window",
-    "hvac",
-    "heat pump",
-    "solar panel",
-    "roofing",
-    "appliance",
-    "home exterior",
-    "builder",
-    "family",
-    "living room",
-]
+        # Known non-Hot-Take / non-chart article imagery
+        "arctic cold",
+        "vision house",
+        "transcend",
+        "guest columnist",
+
+        # Typical non-chart photography
+        "kitchen",
+        "bathroom",
+        "window",
+        "hvac",
+        "heat pump",
+        "solar panel",
+        "roofing",
+        "appliance",
+        "home exterior",
+        "builder",
+        "family",
+        "living room",
+    ]
 
     prefer_terms = [
         "chart",
