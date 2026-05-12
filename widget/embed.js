@@ -246,7 +246,7 @@
 
 .gbm-toggle {
   margin-top: 10px;
-  margin-left: 66px;
+  margin-left: 102px;
   margin-bottom: 18px;
   color: #0087a7;
   font-size: 13px;
@@ -254,8 +254,8 @@
   text-transform: uppercase;
   letter-spacing: .06em;
   cursor: pointer;
+  line-height: 1;
 }
-
     .gbm-hot-take {
       margin-left: 60px;
       margin-top: 22px;
