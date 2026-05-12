@@ -955,6 +955,10 @@
 
       ${renderHotTake(payload, articles)}
 
+      <div class="gbm-section-title">
+  SUPPORTING RESOURCES
+</div>
+
       <div class="gbm-grid">
         ${renderColumn("Articles", "article", articles, "No related article cards were returned for this query.")}
         ${renderColumn("PDFs & Guides", "pdf", pdfs, "No related PDF or guide cards were returned for this query.")}
