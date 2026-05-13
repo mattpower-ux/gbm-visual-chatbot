@@ -52,7 +52,17 @@ def clean_text(text: str) -> str:
 
 
 def normalize_url(url: str) -> str:
-    return (url or "").strip()
+    """
+    Normalize HubSpot image URLs so different width/height query variants match.
+    Example:
+    image.png?width=1200&name=image.png
+    image.png?width=2400&height=1500&name=image.png
+    both become:
+    image.png
+    """
+    raw = (url or "").strip()
+    parsed = urlparse(raw)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def load_allowlist() -> set[str]:
