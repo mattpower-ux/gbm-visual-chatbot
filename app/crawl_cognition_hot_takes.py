@@ -15,12 +15,8 @@ HOT_TAKE_CATEGORY_URL = "https://www.greenbuildermedia.com/blog/topic/cognition-
 SMART_DATA_URL = "https://www.greenbuildermedia.com/cognition-smart-data"
 
 DATA_DIR = Path("/data")
-
 OUT_PATH = DATA_DIR / "cognition_hot_takes.json"
-
-ALLOWLIST_PATH = (
-    DATA_DIR / "cognition_hot_take_image_allowlist.json"
-)
+ALLOWLIST_PATH = DATA_DIR / "cognition_hot_take_image_allowlist.json"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,28 +51,27 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def normalize_url(url: str) -> str:
+    return (url or "").strip()
+
+
 def load_allowlist() -> set[str]:
     if not ALLOWLIST_PATH.exists():
         return set()
 
     try:
         data = json.loads(ALLOWLIST_PATH.read_text())
-        return set(data.get("allowed_image_urls", []))
-    except Exception:
+        return {normalize_url(u) for u in data.get("allowed_image_urls", []) if u}
+    except Exception as exc:
+        print(f"WARNING: Could not read allowlist: {exc}")
         return set()
 
 
-def extract_category_article_urls(
-    html: str,
-    base_url: str,
-) -> list[str]:
-
+def extract_category_article_urls(html: str, base_url: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
-
     urls: list[str] = []
 
     for a in soup.find_all("a", href=True):
-
         href = urljoin(base_url, a["href"])
 
         if "/blog/" not in href:
@@ -89,12 +84,7 @@ def extract_category_article_urls(
             continue
 
         parsed = urlparse(href)
-
-        clean_url = (
-            f"{parsed.scheme}://"
-            f"{parsed.netloc}"
-            f"{parsed.path}"
-        )
+        clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
         if clean_url not in urls:
             urls.append(clean_url)
@@ -104,58 +94,35 @@ def extract_category_article_urls(
 
 def nearby_text_for_image(img) -> str:
     chunks: list[str] = []
-
     parent = img.find_parent()
 
     for _ in range(4):
-
         if not parent:
             break
 
-        text = clean_text(
-            parent.get_text(" ", strip=True)
-        )
-
+        text = clean_text(parent.get_text(" ", strip=True))
         if text:
             chunks.append(text)
 
         parent = parent.find_parent()
 
-    return clean_text(
-        " ".join(chunks)
-    )[:1200]
+    return clean_text(" ".join(chunks))[:1200]
 
 
-def extract_keywords(
-    title: str,
-    nearby_text: str,
-    alt: str,
-) -> list[str]:
-
+def extract_keywords(title: str, nearby_text: str, alt: str) -> list[str]:
     text = f"{title} {nearby_text} {alt}".lower()
-
-    words = re.findall(
-        r"[a-z][a-z\-]{3,}",
-        text
-    )
+    words = re.findall(r"[a-z][a-z\-]{3,}", text)
 
     stop = {
-        "with", "that", "this", "from",
-        "have", "will", "your", "more",
-        "about", "green", "builder",
-        "media", "cognition", "smart",
-        "data", "home", "homes",
-        "house", "housing", "buyers",
-        "consumer", "consumers",
+        "with", "that", "this", "from", "have", "will", "your", "more",
+        "about", "green", "builder", "media", "cognition", "smart", "data",
+        "home", "homes", "house", "housing", "buyers", "consumer", "consumers",
     }
 
     counts: dict[str, int] = {}
-
     for w in words:
-
         if w in stop:
             continue
-
         counts[w] = counts.get(w, 0) + 1
 
     return [
@@ -171,35 +138,21 @@ def extract_graphics_from_article(
     article_url: str,
     allowlist: set[str],
 ) -> list[HotTakeGraphic]:
-
     html = fetch(article_url)
-
     soup = BeautifulSoup(html, "html.parser")
 
     title = ""
-
     h1 = soup.find("h1")
-
     if h1:
-        title = clean_text(
-            h1.get_text(" ", strip=True)
-        )
+        title = clean_text(h1.get_text(" ", strip=True))
 
     if not title:
-        og = soup.find(
-            "meta",
-            property="og:title"
-        )
-
-        title = (
-            clean_text(og.get("content", ""))
-            if og else article_url
-        )
+        og = soup.find("meta", property="og:title")
+        title = clean_text(og.get("content", "")) if og else article_url
 
     graphics: list[HotTakeGraphic] = []
 
     for img in soup.find_all("img"):
-
         src = (
             img.get("src")
             or img.get("data-src")
@@ -210,60 +163,47 @@ def extract_graphics_from_article(
         if not src:
             continue
 
-        image_url = urljoin(article_url, src)
+        image_url = normalize_url(urljoin(article_url, src))
 
         if image_url.startswith("data:"):
             continue
 
-        alt = clean_text(
-            img.get("alt", "")
-        )
+        # STRICT MODE:
+        # If the allowlist has entries, keep ONLY images in that allowlist.
+        if allowlist and image_url not in allowlist:
+            continue
 
+        alt = clean_text(img.get("alt", ""))
         nearby = nearby_text_for_image(img)
 
-        is_allowed = image_url in allowlist
-
-        if not is_allowed:
-
-            blob = " ".join([
-                image_url,
-                alt,
-                nearby,
-            ]).lower()
+        # If no allowlist exists, fall back to a conservative hard-reject list.
+        if not allowlist:
+            blob = " ".join([image_url, alt, nearby]).lower()
 
             hard_reject = [
-
                 "logo",
                 "headshot",
                 "author",
                 "avatar",
                 "profile",
-
                 "facebook",
                 "twitter",
                 "linkedin",
                 "instagram",
                 "youtube",
-
                 "icon",
                 "button",
                 "advertisement",
                 "sponsor",
-
                 "sustainable product of the year",
                 "product of the year",
-
                 "sustainable brand index",
                 "brand index",
-
                 "vision house",
                 "guest columnist",
             ]
 
-            if any(
-                term in blob
-                for term in hard_reject
-            ):
+            if any(term in blob for term in hard_reject):
                 continue
 
         graphics.append(
@@ -273,58 +213,36 @@ def extract_graphics_from_article(
                 image_url=image_url,
                 alt=alt,
                 nearby_text=nearby,
-                keywords=extract_keywords(
-                    title,
-                    nearby,
-                    alt,
-                ),
+                keywords=extract_keywords(title, nearby, alt),
             )
         )
 
     return graphics
 
 
-def crawl_all_pages(
-    max_pages: int = 5,
-) -> list[str]:
-
+def crawl_all_pages(max_pages: int = 5) -> list[str]:
     all_urls: list[str] = []
 
     for page in range(1, max_pages + 1):
-
         if page == 1:
             url = HOT_TAKE_CATEGORY_URL
         else:
-            url = (
-                f"{HOT_TAKE_CATEGORY_URL}"
-                f"/page/{page}"
-            )
+            url = f"{HOT_TAKE_CATEGORY_URL}/page/{page}"
 
-        print(
-            f"Fetching category page: {url}"
-        )
+        print(f"Fetching category page: {url}")
 
         try:
             html = fetch(url)
-
         except Exception as exc:
-
-            print(
-                f"Stopped at page {page}: {exc}"
-            )
-
+            print(f"Stopped at page {page}: {exc}")
             break
 
-        urls = extract_category_article_urls(
-            html,
-            url,
-        )
+        urls = extract_category_article_urls(html, url)
 
         if not urls:
             break
 
         for u in urls:
-
             if u not in all_urls:
                 all_urls.append(u)
 
@@ -334,83 +252,48 @@ def crawl_all_pages(
 
 
 def main() -> None:
-
-    DATA_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     allowlist = load_allowlist()
 
-    print(
-        f"Loaded allowlist with "
-        f"{len(allowlist)} image(s)"
-    )
+    print(f"Loaded allowlist with {len(allowlist)} image(s)")
+    if allowlist:
+        print("STRICT ALLOWLIST MODE: only allowlisted images will be kept.")
+    else:
+        print("NO ALLOWLIST FOUND: crawler will use broad fallback filtering.")
 
-    article_urls = crawl_all_pages(
-        max_pages=5
-    )
+    article_urls = crawl_all_pages(max_pages=5)
 
-    print(
-        f"Found {len(article_urls)} "
-        f"Hot Take article URLs"
-    )
+    print(f"Found {len(article_urls)} Hot Take article URLs")
 
     graphics: list[HotTakeGraphic] = []
 
-    for i, article_url in enumerate(
-        article_urls,
-        start=1,
-    ):
-
-        print(
-            f"[{i}/{len(article_urls)}] "
-            f"Extracting graphics from "
-            f"{article_url}"
-        )
+    for i, article_url in enumerate(article_urls, start=1):
+        print(f"[{i}/{len(article_urls)}] Extracting graphics from {article_url}")
 
         try:
-
-            found = extract_graphics_from_article(
-                article_url,
-                allowlist,
-            )
-
-            print(
-                f"  found "
-                f"{len(found)} candidate image(s)"
-            )
-
+            found = extract_graphics_from_article(article_url, allowlist)
+            print(f"  found {len(found)} approved image(s)")
             graphics.extend(found)
-
         except Exception as exc:
-
             print(f"  failed: {exc}")
 
         time.sleep(0.5)
 
     payload = {
         "source": HOT_TAKE_CATEGORY_URL,
+        "strict_allowlist_mode": bool(allowlist),
+        "allowlist_count": len(allowlist),
         "count": len(graphics),
-        "graphics": [
-            asdict(g)
-            for g in graphics
-        ],
+        "graphics": [asdict(g) for g in graphics],
     }
 
     OUT_PATH.write_text(
-        json.dumps(
-            payload,
-            indent=2,
-            ensure_ascii=False,
-        ),
+        json.dumps(payload, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    print(
-        f"Wrote {len(graphics)} "
-        f"graphics to {OUT_PATH}"
-    )
+    print(f"Wrote {len(graphics)} graphics to {OUT_PATH}")
 
 
 if __name__ == "__main__":
