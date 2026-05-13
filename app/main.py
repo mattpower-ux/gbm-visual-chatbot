@@ -38,6 +38,7 @@ from app.models import (
     SourceItem,
 )
 from app.retrieval import search
+from app.hot_take_matcher import best_hot_take
 
 settings = get_settings()
 
@@ -1488,6 +1489,12 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
     videos = search_youtube_videos(question, limit=2) if question else []
     podcasts = search_podcasts(question, limit=2) if question else []
 
+    try:
+        hot_take = best_hot_take(question) if question else None
+    except Exception as exc:
+        print(f"Hot Take matching failed: {exc}")
+        hot_take = None
+
     base.update(
         {
             "visual_summary": _first_paragraph(answer),
@@ -1496,6 +1503,7 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
             "magazines": magazines,
             "videos": videos,
             "podcasts": podcasts,
+            "hot_take": hot_take,
             "text_only_answer": answer,
             "ui_mode_default": "visual",
         }
