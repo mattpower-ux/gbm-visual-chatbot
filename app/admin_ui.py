@@ -5,7 +5,7 @@ HTML = r"""
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Green Builder Bot Editor Console</title>
+  <title>COGNITION DeepDive Editor Console</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
@@ -80,6 +80,7 @@ HTML = r"""
   <div class="header-actions">
     <button id="rebuild-index-btn" class="header-btn">Rebuild Index</button>
     <button id="check-rebuild-status-btn" class="header-btn secondary">Check Status</button>
+    <button id="sync-hot-takes-btn" class="header-btn secondary">Sync Hot Takes</button>
     <span id="rebuild-status">Index status: idle</span>
   </div>
 </header>
@@ -284,6 +285,38 @@ async function fetchJson(url, options = {}) {
   }
 
   return { res, data, rawText };
+}
+
+
+async function syncHotTakes() {
+  const statusEl = document.getElementById("rebuild-status");
+  statusEl.textContent = "Syncing COGNITION Hot Takes...";
+
+  try {
+    const res = await fetch("/api/admin/sync-hot-takes", {
+      method: "POST",
+      credentials: "same-origin"
+    });
+
+    const rawText = await res.text();
+    let data = {};
+
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch (e) {
+      statusEl.textContent = "Hot Take sync failed. Server did not return JSON: " + rawText.slice(0, 300);
+      return;
+    }
+
+    if (!res.ok || data.ok === false) {
+      statusEl.textContent = "Hot Take sync failed: " + (data.error || data.detail || data.message || "Unknown error");
+      return;
+    }
+
+    statusEl.textContent = data.message || "Hot Take sync complete.";
+  } catch (err) {
+    statusEl.textContent = "Hot Take sync error: " + err.message;
+  }
 }
 
 async function rebuildIndex() {
@@ -829,6 +862,7 @@ bindClick("preview-unused-pdfs-btn", previewUnusedPDFs);
 bindClick("clean-unused-pdfs-btn", cleanUnusedPDFs);
 bindClick("uploadThumbBtn", uploadThumbnailOverride);
 bindClick("rebuild-index-btn", rebuildIndex);
+bindClick("sync-hot-takes-btn", syncHotTakes);
 bindClick("check-rebuild-status-btn", checkRebuildStatus);
 
 applyPrefillFromUrl();
