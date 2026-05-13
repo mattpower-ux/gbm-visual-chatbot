@@ -1785,6 +1785,54 @@ def admin_rebuild_index_status(_: str = Depends(admin_auth)) -> dict:
     return {"status": "running"}
 
 
+@app.post("/api/admin/sync-hot-takes")
+def admin_sync_hot_takes(_: str = Depends(admin_auth)) -> dict:
+    try:
+        from app.crawl_cognition_hot_takes import (
+            main as crawl_hot_takes_main
+        )
+
+        crawl_hot_takes_main()
+
+        hot_take_file = Path(
+            "/data/cognition_hot_takes.json"
+        )
+
+        count = 0
+
+        if hot_take_file.exists():
+            try:
+                data = json.loads(
+                    hot_take_file.read_text(
+                        encoding="utf-8"
+                    )
+                )
+                count = int(
+                    data.get("count", 0)
+                )
+            except Exception:
+                count = 0
+
+        return {
+            "ok": True,
+            "message": (
+                f"COGNITION Hot Takes synced. "
+                f"{count} approved graphic(s) available."
+            ),
+            "graphics_count": count,
+            "file": str(hot_take_file),
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": (
+                f"COGNITION Hot Take sync failed: {exc}"
+            ),
+            "error": str(exc),
+        }
+
+
 @app.get("/api/admin/sync-youtube")
 def admin_sync_youtube(_: str = Depends(admin_auth)) -> dict:
     videos = sync_youtube_videos()
