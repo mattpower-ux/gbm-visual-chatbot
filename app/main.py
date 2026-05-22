@@ -72,6 +72,16 @@ YOUTUBE_CACHE_FILE = Path("/data/youtube_videos.json")
 YOUTUBE_CACHE_MAX_AGE_SECONDS = int(os.getenv("YOUTUBE_CACHE_MAX_AGE_SECONDS", str(60 * 60 * 24)))
 YOUTUBE_MAX_SYNC_RESULTS = int(os.getenv("YOUTUBE_MAX_SYNC_RESULTS", "250"))
 
+# === YouTube Transcript Cache ===
+YOUTUBE_TRANSCRIPT_DIR = Path(os.getenv("YOUTUBE_TRANSCRIPT_DIR", "/data/youtube_transcripts"))
+YOUTUBE_TRANSCRIPT_CACHE_FILE = Path(os.getenv("YOUTUBE_TRANSCRIPT_CACHE_FILE", "/data/youtube_transcripts.json"))
+YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID = os.getenv("YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID", "").strip()
+GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "").strip()
+ENABLE_TRANSCRIPT_AUTO_SYNC = os.getenv("ENABLE_TRANSCRIPT_AUTO_SYNC", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+TRANSCRIPT_SYNC_INTERVAL_SECONDS = int(os.getenv("TRANSCRIPT_SYNC_INTERVAL_SECONDS", str(60 * 60 * 24 * 7)))
+
 # === Podcast Playlist Cache ===
 PODCAST_PLAYLIST_ID = os.getenv(
     "PODCAST_PLAYLIST_ID",
@@ -95,9 +105,9 @@ MONTH_PATTERN = (
 
 DATE_PATTERNS = [
     rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b",
-    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{{1,2}},\s+\d{{4}}\b",
+    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{{1,2}},\s+\d{{4}}\b",
     rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\b",
-    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{{1,2}}\b",
+    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{{1,2}}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b\d{1,2}/\d{1,2}/\d{4}\b",
 ]
@@ -207,6 +217,17 @@ async def run_daily_crawl_loop() -> None:
         await asyncio.sleep(DAILY_CRAWL_INTERVAL_SECONDS)
 
 
+async def run_youtube_transcript_sync_loop() -> None:
+    await asyncio.sleep(STARTUP_CRAWL_DELAY_SECONDS + 10)
+    while True:
+        try:
+            summary = sync_youtube_transcripts()
+            print(f"Scheduled YouTube transcript sync completed: {summary}")
+        except Exception as exc:
+            print(f"Scheduled YouTube transcript sync failed: {exc}")
+        await asyncio.sleep(TRANSCRIPT_SYNC_INTERVAL_SECONDS)
+
+
 async def run_rebuild_once() -> None:
     from app.build_index import main as build_main
     await asyncio.to_thread(build_main)
@@ -218,6 +239,11 @@ async def startup_event() -> None:
         asyncio.create_task(run_daily_crawl_loop())
     else:
         print("Background crawl loop disabled by ENABLE_BACKGROUND_CRAWL.")
+
+    if ENABLE_TRANSCRIPT_AUTO_SYNC:
+        asyncio.create_task(run_youtube_transcript_sync_loop())
+    else:
+        print("YouTube transcript auto-sync disabled by ENABLE_TRANSCRIPT_AUTO_SYNC.")
 
 
 def is_future_event_query(question: str) -> bool:
@@ -270,12 +296,12 @@ def parse_single_event_date(raw: str, default_year: int | None = None) -> date |
         return None
     raw = raw.strip()
     raw = re.sub(
-        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{1,2},\s+(\d{4})",
+        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{1,2},\s+(\d{4})",
         r"\1 \2, \3",
         raw,
     )
     raw = re.sub(
-        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{1,2}",
+        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{1,2}",
         r"\1 \2",
         raw,
     )
@@ -1078,6 +1104,293 @@ def _get_youtube_uploads_playlist_id() -> str:
     return uploads
 
 
+def _normalize_transcript_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def _clean_transcript_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _parse_transcript_file(path: Path) -> dict[str, Any] | None:
+    """Parse a local .txt transcript file.
+
+    Expected preferred header fields:
+    video_id:
+    url:
+    title:
+    published_at:
+    speakers:
+
+    The parser is permissive so existing hand-created transcripts still work.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        print(f"Could not read transcript file {path}: {exc}")
+        return None
+
+    if not raw.strip():
+        return None
+
+    metadata: dict[str, str] = {}
+    body_lines: list[str] = []
+
+    in_header = True
+    for line in raw.splitlines():
+        stripped = line.strip()
+
+        if in_header:
+            match = re.match(r"^([A-Za-z_ -]{2,40})\s*:\s*(.*)$", stripped)
+            if match:
+                key = match.group(1).strip().lower().replace(" ", "_").replace("-", "_")
+                metadata[key] = match.group(2).strip()
+                continue
+
+            # Once we hit a normal transcript line, treat the rest as body.
+            if stripped:
+                in_header = False
+                body_lines.append(line)
+        else:
+            body_lines.append(line)
+
+    transcript_text = "\n".join(body_lines).strip()
+    if not transcript_text:
+        # Some files may be pure text without metadata.
+        transcript_text = raw.strip()
+
+    video_id = metadata.get("video_id", "")
+    url = metadata.get("url", "")
+    title = metadata.get("title", "")
+
+    if not video_id and url:
+        patterns = [
+            r"[?&]v=([A-Za-z0-9_-]{8,})",
+            r"youtu\.be/([A-Za-z0-9_-]{8,})",
+            r"youtube\.com/embed/([A-Za-z0-9_-]{8,})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                video_id = match.group(1)
+                break
+
+    if not title:
+        title = path.stem.replace("_", " ").replace("-", " ").strip()
+
+    return {
+        "filename": path.name,
+        "path": str(path),
+        "video_id": video_id,
+        "url": url or (f"https://www.youtube.com/watch?v={video_id}" if video_id else ""),
+        "title": title,
+        "published_at": metadata.get("published_at", ""),
+        "speakers": metadata.get("speakers", ""),
+        "text": transcript_text,
+        "text_preview": _clean_transcript_text(transcript_text)[:500],
+        "updated_at_utc": datetime.utcnow().isoformat(),
+    }
+
+
+def _download_drive_transcripts() -> dict[str, Any]:
+    """Download .txt transcripts from a configured Google Drive folder.
+
+    Requires:
+    - GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON
+    - YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID
+
+    The Drive folder must be shared with the service account email.
+    """
+    if not GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON or not YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID:
+        return {
+            "ok": False,
+            "message": "Google Drive transcript sync skipped because Drive credentials or folder ID are missing.",
+            "downloaded": [],
+            "skipped": [],
+        }
+
+    try:
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": (
+                "Google Drive transcript sync requires google-api-python-client. "
+                "Add google-api-python-client, google-auth-httplib2, and google-auth-oauthlib to requirements.txt."
+            ),
+            "error": str(exc),
+            "downloaded": [],
+            "skipped": [],
+        }
+
+    try:
+        service_account_info = json.loads(GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON)
+        credentials = Credentials.from_service_account_info(
+            service_account_info,
+            scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        )
+        service = build("drive", "v3", credentials=credentials)
+
+        query = (
+            f"'{YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID}' in parents "
+            "and trashed = false "
+            "and mimeType != 'application/vnd.google-apps.folder'"
+        )
+
+        files: list[dict[str, Any]] = []
+        page_token = None
+
+        while True:
+            response = service.files().list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+                pageToken=page_token,
+                pageSize=1000,
+            ).execute()
+
+            files.extend(response.get("files", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
+        YOUTUBE_TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+
+        downloaded: list[str] = []
+        skipped: list[str] = []
+
+        for item in files:
+            name = item.get("name", "")
+            if not name.lower().endswith(".txt"):
+                skipped.append(f"{name} (not .txt)")
+                continue
+
+            safe_name = Path(name).name
+            target = YOUTUBE_TRANSCRIPT_DIR / safe_name
+
+            # Skip files already present. This keeps local edits stable and avoids unnecessary downloads.
+            if target.exists() and target.stat().st_size > 0:
+                skipped.append(f"{safe_name} (already exists)")
+                continue
+
+            request = service.files().get_media(fileId=item["id"])
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, request)
+
+            done = False
+            while not done:
+                _status, done = downloader.next_chunk()
+
+            target.write_bytes(buffer.getvalue())
+            downloaded.append(safe_name)
+
+        return {
+            "ok": True,
+            "message": f"Drive transcript sync checked {len(files)} file(s); downloaded {len(downloaded)} new .txt file(s).",
+            "downloaded": downloaded,
+            "skipped": skipped[:100],
+            "drive_file_count": len(files),
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Google Drive transcript sync failed: {exc}",
+            "error": str(exc),
+            "downloaded": [],
+            "skipped": [],
+        }
+
+
+def sync_youtube_transcripts() -> dict[str, Any]:
+    """Sync transcript .txt files from Drive/local folder into /data/youtube_transcripts.json."""
+    YOUTUBE_TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+
+    drive_result = _download_drive_transcripts()
+
+    transcript_records: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+
+    for path in sorted(YOUTUBE_TRANSCRIPT_DIR.glob("*.txt")):
+        try:
+            record = _parse_transcript_file(path)
+            if record:
+                transcript_records.append(record)
+            else:
+                failed.append({"file": path.name, "error": "Empty or unparseable transcript."})
+        except Exception as exc:
+            failed.append({"file": path.name, "error": str(exc)})
+
+    by_video_id = {
+        str(record.get("video_id", "")).strip(): record
+        for record in transcript_records
+        if str(record.get("video_id", "")).strip()
+    }
+
+    by_title_key = {
+        _normalize_transcript_key(str(record.get("title", ""))): record
+        for record in transcript_records
+        if str(record.get("title", "")).strip()
+    }
+
+    payload = {
+        "ok": True,
+        "synced_at_utc": datetime.utcnow().isoformat(),
+        "transcript_dir": str(YOUTUBE_TRANSCRIPT_DIR),
+        "cache_file": str(YOUTUBE_TRANSCRIPT_CACHE_FILE),
+        "count": len(transcript_records),
+        "by_video_id_count": len(by_video_id),
+        "by_title_count": len(by_title_key),
+        "drive_sync": drive_result,
+        "failed": failed,
+        "transcripts": transcript_records,
+    }
+
+    YOUTUBE_TRANSCRIPT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    YOUTUBE_TRANSCRIPT_CACHE_FILE.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    return payload
+
+
+def _load_youtube_transcripts() -> dict[str, Any]:
+    if not YOUTUBE_TRANSCRIPT_CACHE_FILE.exists():
+        return {"count": 0, "transcripts": []}
+
+    try:
+        return json.loads(YOUTUBE_TRANSCRIPT_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"YouTube transcript cache load failed: {exc}")
+        return {"count": 0, "transcripts": []}
+
+
+def _transcript_for_video(video: dict[str, Any], transcript_cache: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    transcript_cache = transcript_cache or _load_youtube_transcripts()
+    transcripts = transcript_cache.get("transcripts", []) or []
+
+    video_id = str(video.get("video_id", "") or "").strip()
+    if video_id:
+        for record in transcripts:
+            if str(record.get("video_id", "") or "").strip() == video_id:
+                return record
+
+    video_title_key = _normalize_transcript_key(str(video.get("title", "") or ""))
+    if video_title_key:
+        for record in transcripts:
+            title_key = _normalize_transcript_key(str(record.get("title", "") or ""))
+            filename_key = _normalize_transcript_key(Path(str(record.get("filename", "") or "")).stem)
+            if title_key and (title_key == video_title_key or title_key in video_title_key or video_title_key in title_key):
+                return record
+            if filename_key and (filename_key == video_title_key or filename_key in video_title_key or video_title_key in filename_key):
+                return record
+
+    return None
+
+
 def sync_youtube_videos() -> list[dict[str, Any]]:
     """Fetch GBM YouTube video metadata and cache it on /data.
 
@@ -1193,7 +1506,10 @@ def _tokenize_for_video_search(text: str) -> list[str]:
 
 
 def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
-    """Return the best matching GBM YouTube videos for a chatbot query."""
+    """Return the best matching GBM YouTube videos for a chatbot query.
+
+    Transcript text is used when /data/youtube_transcripts.json exists.
+    """
     videos = _load_youtube_videos()
     if not videos:
         return []
@@ -1202,30 +1518,49 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
     if not query_terms:
         return []
 
+    transcript_cache = _load_youtube_transcripts()
+
     scored: list[tuple[float, dict[str, Any]]] = []
 
     for video in videos:
         title = str(video.get("title", ""))
         description = str(video.get("description", ""))
-        haystack = f"{title} {description}".lower()
+        transcript = _transcript_for_video(video, transcript_cache)
+        transcript_text = str(transcript.get("text", "") if transcript else "")
+        transcript_preview = str(transcript.get("text_preview", "") if transcript else "")
+
+        haystack = f"{title} {description} {transcript_text}".lower()
 
         score = 0.0
         title_lower = title.lower()
+        transcript_lower = transcript_text.lower()
 
         for term in query_terms:
             if term in title_lower:
                 score += 4.0
-            if term in haystack:
+            if term in description.lower():
                 score += 1.0
+            if term in transcript_lower:
+                score += 2.5
 
         # Small phrase boost for obvious content matches.
         q_lower = (query or "").lower()
-        for phrase in ("heat pump", "solar", "electrification", "resilience", "net zero", "housing"):
+        for phrase in ("heat pump", "solar", "electrification", "resilience", "net zero", "housing", "symposium", "decarbonization"):
             if phrase in q_lower and phrase in haystack:
                 score += 6.0
+            if transcript and phrase in q_lower and phrase in transcript_lower:
+                score += 4.0
 
         if score > 0:
-            scored.append((score, video))
+            enriched = dict(video)
+            if transcript:
+                enriched["has_transcript"] = True
+                enriched["transcript_file"] = transcript.get("filename", "")
+                enriched["transcript_excerpt"] = transcript_preview[:240]
+                enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
+            else:
+                enriched["has_transcript"] = False
+            scored.append((score, enriched))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     return [dict(video) for _, video in scored[:limit]]
@@ -1692,8 +2027,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         if not chunks:
             response = ChatResponse(
                 answer=(
-                    "IÃ¢â‚¬â„¢m not seeing any confirmed future conferences in the current Green Builder Media excerpts. "
-                    "The available event-related content appears to be past or undated, so I canÃ¢â‚¬â„¢t verify an upcoming conference from the retrieved material."
+                    "IÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢m not seeing any confirmed future conferences in the current Green Builder Media excerpts. "
+                    "The available event-related content appears to be past or undated, so I canÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢t verify an upcoming conference from the retrieved material."
                 ),
                 sources=[],
             )
@@ -2013,6 +2348,55 @@ def admin_youtube_status(_: str = Depends(admin_auth)) -> dict:
     }
 
 
+@app.post("/api/admin/sync-youtube-transcripts")
+def admin_sync_youtube_transcripts(_: str = Depends(admin_auth)) -> dict:
+    result = sync_youtube_transcripts()
+    return {
+        "ok": bool(result.get("ok", True)),
+        "message": (
+            f"YouTube transcripts synced. "
+            f"{result.get('count', 0)} transcript file(s) available."
+        ),
+        "transcript_count": result.get("count", 0),
+        "by_video_id_count": result.get("by_video_id_count", 0),
+        "by_title_count": result.get("by_title_count", 0),
+        "drive_sync": result.get("drive_sync", {}),
+        "failed": result.get("failed", []),
+        "cache_file": str(YOUTUBE_TRANSCRIPT_CACHE_FILE),
+        "transcript_dir": str(YOUTUBE_TRANSCRIPT_DIR),
+    }
+
+
+@app.get("/api/admin/youtube-transcript-status")
+def admin_youtube_transcript_status(_: str = Depends(admin_auth)) -> dict:
+    cache = _load_youtube_transcripts()
+    transcript_files = sorted(YOUTUBE_TRANSCRIPT_DIR.glob("*.txt")) if YOUTUBE_TRANSCRIPT_DIR.exists() else []
+    return {
+        "ok": True,
+        "transcript_dir": str(YOUTUBE_TRANSCRIPT_DIR),
+        "cache_file": str(YOUTUBE_TRANSCRIPT_CACHE_FILE),
+        "cache_exists": YOUTUBE_TRANSCRIPT_CACHE_FILE.exists(),
+        "local_txt_count": len(transcript_files),
+        "cached_transcript_count": int(cache.get("count", len(cache.get("transcripts", []) or [])) or 0),
+        "drive_folder_id_configured": bool(YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID),
+        "drive_credentials_configured": bool(GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON),
+        "auto_sync_enabled": ENABLE_TRANSCRIPT_AUTO_SYNC,
+        "sync_interval_seconds": TRANSCRIPT_SYNC_INTERVAL_SECONDS,
+        "sample": (cache.get("transcripts", []) or [])[:3],
+    }
+
+
+@app.get("/api/admin/test-youtube-transcript-search")
+def admin_test_youtube_transcript_search(q: str = "heat pump", _: str = Depends(admin_auth)) -> dict:
+    videos = search_youtube_videos(q, limit=10)
+    return {
+        "ok": True,
+        "query": q,
+        "video_count": len(videos),
+        "videos": videos,
+    }
+
+
 @app.get("/api/admin/test-pdf-cards")
 def admin_test_pdf_cards(q: str = "home electrification", _: str = Depends(admin_auth)) -> dict:
     cards = search_magazine_pdf_cards(q, limit=10)
@@ -2306,7 +2690,7 @@ def run_pdf_inbox_ingest(pause_seconds: int = PDF_INGEST_DEFAULT_PAUSE_SECONDS) 
                         write_magazine_ingest_status({
                             **base_status,
                             "status": "running",
-                            "message": f"Ingesting {filename} ({index}/{total}) â€” {int(time.time() - started_at)} seconds elapsed",
+                            "message": f"Ingesting {filename} ({index}/{total}) Ã¢â‚¬â€ {int(time.time() - started_at)} seconds elapsed",
                             "paused": False,
                             "skip_requested": False,
                         })
