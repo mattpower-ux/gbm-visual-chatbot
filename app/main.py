@@ -95,9 +95,9 @@ MONTH_PATTERN = (
 
 DATE_PATTERNS = [
     rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b",
-    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-â€“â€”]\s*\d{{1,2}},\s+\d{{4}}\b",
+    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{{1,2}},\s+\d{{4}}\b",
     rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\b",
-    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-â€“â€”]\s*\d{{1,2}}\b",
+    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{{1,2}}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b\d{1,2}/\d{1,2}/\d{4}\b",
 ]
@@ -222,7 +222,33 @@ async def startup_event() -> None:
 
 def is_future_event_query(question: str) -> bool:
     q = (question or "").lower()
-    return any(term in q for term in FUTURE_EVENT_TERMS)
+
+    # Broad event words such as "symposium" or "conference" should NOT
+    # automatically trigger future-event filtering, because GBM has past
+    # symposium/conference articles that should remain searchable.
+    #
+    # Only apply the future-event filter when the user clearly asks for
+    # upcoming/future/next/register-style event information.
+    future_intent_terms = [
+        "coming up",
+        "upcoming",
+        "future",
+        "next event",
+        "next events",
+        "next conference",
+        "next conferences",
+        "next symposium",
+        "next symposiums",
+        "conference schedule",
+        "event schedule",
+        "calendar",
+        "register",
+        "registration",
+        "2026",
+        "2027",
+    ]
+
+    return any(term in q for term in future_intent_terms)
 
 
 def parse_published_year(published_at: str | None) -> int | None:
@@ -244,12 +270,12 @@ def parse_single_event_date(raw: str, default_year: int | None = None) -> date |
         return None
     raw = raw.strip()
     raw = re.sub(
-        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-â€“â€”]\s*\d{1,2},\s+(\d{4})",
+        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{1,2},\s+(\d{4})",
         r"\1 \2, \3",
         raw,
     )
     raw = re.sub(
-        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-â€“â€”]\s*\d{1,2}",
+        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-Ã¢â‚¬â€œÃ¢â‚¬â€]\s*\d{1,2}",
         r"\1 \2",
         raw,
     )
@@ -1575,8 +1601,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         if not chunks:
             response = ChatResponse(
                 answer=(
-                    "Iâ€™m not seeing any confirmed future conferences in the current Green Builder Media excerpts. "
-                    "The available event-related content appears to be past or undated, so I canâ€™t verify an upcoming conference from the retrieved material."
+                    "IÃ¢â‚¬â„¢m not seeing any confirmed future conferences in the current Green Builder Media excerpts. "
+                    "The available event-related content appears to be past or undated, so I canÃ¢â‚¬â„¢t verify an upcoming conference from the retrieved material."
                 ),
                 sources=[],
             )
@@ -2189,7 +2215,7 @@ def run_pdf_inbox_ingest(pause_seconds: int = PDF_INGEST_DEFAULT_PAUSE_SECONDS) 
                         write_magazine_ingest_status({
                             **base_status,
                             "status": "running",
-                            "message": f"Ingesting {filename} ({index}/{total}) — {int(time.time() - started_at)} seconds elapsed",
+                            "message": f"Ingesting {filename} ({index}/{total}) â€” {int(time.time() - started_at)} seconds elapsed",
                             "paused": False,
                             "skip_requested": False,
                         })
