@@ -50,11 +50,15 @@
       item.driveTranscriptUrl ||
       item.transcript_drive_url ||
       item.transcriptDriveUrl ||
+      item.transcript_file_url ||
+      item.transcriptFileUrl ||
+      item.transcript_path ||
+      item.transcriptPath ||
       "";
 
     if (direct) return abs(direct);
 
-    if (item.has_transcript && item.video_id) {
+    if ((item.has_transcript || item.transcript_file || item.transcript_excerpt) && item.video_id) {
       return abs(`/api/youtube-transcript/${encodeURIComponent(item.video_id)}`);
     }
 
@@ -408,6 +412,8 @@
       padding: 14px;
       box-shadow: 0 8px 24px rgba(0,0,0,.04);
       min-width: 0;
+      display: flex;
+      flex-direction: column;
     }
 
     .gbm-column-header {
@@ -433,19 +439,16 @@
     }
 
     .gbm-count {
-      margin-left: auto;
-      background: #edf5f2;
-      border-radius: 999px;
-      padding: 3px 8px;
-      font-size: 11px;
-      color: #66736f;
-      font-weight: 900;
+      display: none;
     }
 
     .gbm-card {
       border-top: 1px solid #edf2f2;
       padding-top: 12px;
       margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
     }
 
     .gbm-card:first-of-type {
@@ -538,6 +541,10 @@
       justify-content: center;
       align-items: center;
       box-sizing: border-box;
+    }
+
+    .gbm-card > .gbm-button:not(.gbm-button-secondary) {
+      margin-top: auto;
     }
 
     .gbm-button-secondary {
@@ -836,7 +843,6 @@
         <div class="gbm-column-header">
           <div class="gbm-icon">${icon(type)}</div>
           ${esc(title)}
-          <div class="gbm-count">${visible.length}</div>
         </div>
 
         ${visible.length ? visible.map(item => renderCard(type, item)).join("") : `
