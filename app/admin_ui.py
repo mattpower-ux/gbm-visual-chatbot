@@ -81,12 +81,14 @@ HTML = r"""
     <button id="rebuild-index-btn" class="header-btn">Rebuild Index</button>
     <button id="check-rebuild-status-btn" class="header-btn secondary">Check Status</button>
     <button id="sync-hot-takes-btn" class="header-btn secondary">Sync Hot Takes</button>
+    <button id="sync-youtube-transcripts-btn" class="header-btn secondary">UPDATE YT TRANSCRIPTS</button>
     <span id="rebuild-status">Index status: idle</span>
   </div>
 </header>
 
 <main>
   <div class="notice" id="prefillNotice" style="display:none"></div>
+  <div class="notice" id="youtube-transcript-status" style="display:none"></div>
 
   <section class="card upload-box">
     <h2 style="margin-top:0">Upload magazine PDF(s)</h2>
@@ -316,6 +318,50 @@ async function syncHotTakes() {
     statusEl.textContent = data.message || "Hot Take sync complete.";
   } catch (err) {
     statusEl.textContent = "Hot Take sync error: " + err.message;
+  }
+}
+
+
+async function syncYouTubeTranscripts() {
+  const statusEl = document.getElementById("youtube-transcript-status");
+  const headerStatusEl = document.getElementById("rebuild-status");
+
+  if (statusEl) {
+    statusEl.style.display = "block";
+    statusEl.textContent = "Updating YouTube transcripts from Google Drive...";
+  }
+  if (headerStatusEl) {
+    headerStatusEl.textContent = "Updating YT transcripts...";
+  }
+
+  try {
+    const { res, data, rawText } = await fetchJson("/api/admin/sync-youtube-transcripts", {
+      method: "POST"
+    });
+
+    if (!res.ok || data.ok === false) {
+      const message = "YouTube transcript update failed: " + (data.error || data.detail || data.message || rawText.slice(0, 300) || "Unknown error");
+      if (statusEl) statusEl.textContent = message;
+      if (headerStatusEl) headerStatusEl.textContent = "YT transcript update failed.";
+      return;
+    }
+
+    const details = [];
+    if (typeof data.transcripts_synced !== "undefined") details.push(`${data.transcripts_synced} synced`);
+    if (typeof data.downloaded !== "undefined") details.push(`${data.downloaded} downloaded`);
+    if (typeof data.skipped !== "undefined") details.push(`${data.skipped} skipped`);
+    if (typeof data.transcript_count !== "undefined") details.push(`${data.transcript_count} total`);
+
+    const message = data.message || (details.length ? `YouTube transcripts updated: ${details.join(" · ")}` : "YouTube transcripts updated successfully.");
+    if (statusEl) statusEl.textContent = message;
+    if (headerStatusEl) headerStatusEl.textContent = "YT transcript update complete.";
+  } catch (err) {
+    const message = "YouTube transcript update error: " + err.message;
+    if (statusEl) {
+      statusEl.style.display = "block";
+      statusEl.textContent = message;
+    }
+    if (headerStatusEl) headerStatusEl.textContent = "YT transcript update error.";
   }
 }
 
@@ -863,6 +909,7 @@ bindClick("clean-unused-pdfs-btn", cleanUnusedPDFs);
 bindClick("uploadThumbBtn", uploadThumbnailOverride);
 bindClick("rebuild-index-btn", rebuildIndex);
 bindClick("sync-hot-takes-btn", syncHotTakes);
+bindClick("sync-youtube-transcripts-btn", syncYouTubeTranscripts);
 bindClick("check-rebuild-status-btn", checkRebuildStatus);
 
 applyPrefillFromUrl();
