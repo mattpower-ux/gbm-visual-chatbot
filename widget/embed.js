@@ -491,6 +491,60 @@
       background: #e8f6f3;
     }
 
+    .gbm-more-like-btn {
+      font-family: inherit;
+    }
+
+    .gbm-related-results {
+      margin: 14px 0 0 0;
+      grid-column: 1 / -1;
+    }
+
+    .gbm-related-panel {
+      background: #f7fbfa;
+      border: 1px solid #d8ebe7;
+      border-radius: 18px;
+      padding: 14px;
+      margin-top: 12px;
+    }
+
+    .gbm-related-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      color: #143b45;
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .gbm-related-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .gbm-related-loading,
+    .gbm-related-error,
+    .gbm-related-empty {
+      color: #66736f;
+      font-size: 13px;
+      line-height: 1.45;
+      padding: 10px 0;
+    }
+
+    .gbm-related-close {
+      border: 0;
+      background: transparent;
+      color: #0e6f82;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
     .gbm-inputbar {
       background: white;
       border-top: 1px solid #dce5e2;
@@ -558,6 +612,10 @@
   display: none !important;
 }
     @media (max-width: 800px) {
+      .gbm-related-grid {
+        grid-template-columns: 1fr;
+      }
+
       .gbm-panel {
         inset: 0;
         width: auto;
@@ -806,7 +864,7 @@
     return base + "?term=" + encodeURIComponent(scopedTopic);
   }
 
-  function renderCard(type, item) {
+  function renderCard(type, item, showMore = true) {
     const isVideo = type === "video" || type === "podcast";
     const yid = isVideo ? youtubeId(item.url || item.source_url || "") : "";
 
@@ -883,9 +941,21 @@
           }
         </a>
 
-        <a class="gbm-button gbm-button-secondary" href="${moreLikeThisUrl(type, item)}" target="_blank" rel="noopener">
-          More Like This â†—
-        </a>
+        ${
+          showMore
+            ? `
+              <button
+                class="gbm-button gbm-button-secondary gbm-more-like-btn"
+                type="button"
+                data-more-type="${esc(type)}"
+                data-more-title="${esc(item.title || "")}"
+                data-more-url="${esc(url)}"
+              >
+                More Like This
+              </button>
+            `
+            : ""
+        }
       </div>
     `;
   }
@@ -976,6 +1046,105 @@
     `;
   }
 
+  function bindMoreLikeButtons() {
+    messages.querySelectorAll(".gbm-more-like-btn").forEach(btn => {
+      btn.addEventListener("click", () => loadMoreLikeThis(btn));
+    });
+  }
+
+  async function loadMoreLikeThis(button) {
+    const container = messages.querySelector("#gbm-related-results");
+    if (!container) return;
+
+    const type = button.getAttribute("data-more-type") || "article";
+    const title = button.getAttribute("data-more-title") || "";
+    const url = button.getAttribute("data-more-url") || "";
+
+    container.innerHTML = `
+      <div class="gbm-related-panel">
+        <div class="gbm-related-head">
+          <span>More like this: ${esc(title || type)}</span>
+          <button class="gbm-related-close" type="button">Close</button>
+        </div>
+        <div class="gbm-related-loading">Finding related Green Builder Media resources...</div>
+      </div>
+    `;
+
+    const closeBtn = container.querySelector(".gbm-related-close");
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        container.innerHTML = "";
+      };
+    }
+
+    try {
+      const params = new URLSearchParams({
+        q: currentCardQuery || "",
+        type,
+        title,
+        url,
+        limit: "4"
+      });
+
+      const response = await fetch(API_BASE + "/api/related-cards?" + params.toString());
+
+      if (!response.ok) {
+        throw new Error("Related-card search failed with HTTP " + response.status);
+      }
+
+      const payload = await response.json();
+      const cards = payload.cards || [];
+
+      if (!cards.length) {
+        container.innerHTML = `
+          <div class="gbm-related-panel">
+            <div class="gbm-related-head">
+              <span>More like this: ${esc(title || type)}</span>
+              <button class="gbm-related-close" type="button">Close</button>
+            </div>
+            <div class="gbm-related-empty">No additional closely related resources were found.</div>
+          </div>
+        `;
+      } else {
+        container.innerHTML = `
+          <div class="gbm-related-panel">
+            <div class="gbm-related-head">
+              <span>More like this: ${esc(title || type)}</span>
+              <button class="gbm-related-close" type="button">Close</button>
+            </div>
+            <div class="gbm-related-grid">
+              ${cards.map(card => renderCard(type, card, false)).join("")}
+            </div>
+          </div>
+        `;
+      }
+
+      const closeAgain = container.querySelector(".gbm-related-close");
+      if (closeAgain) {
+        closeAgain.onclick = () => {
+          container.innerHTML = "";
+        };
+      }
+    } catch (err) {
+      container.innerHTML = `
+        <div class="gbm-related-panel">
+          <div class="gbm-related-head">
+            <span>More like this: ${esc(title || type)}</span>
+            <button class="gbm-related-close" type="button">Close</button>
+          </div>
+          <div class="gbm-related-error">${esc(err.message || "Unable to load related resources.")}</div>
+        </div>
+      `;
+
+      const closeBtn = container.querySelector(".gbm-related-close");
+      if (closeBtn) {
+        closeBtn.onclick = () => {
+          container.innerHTML = "";
+        };
+      }
+    }
+  }
+
   function renderVisual(payload, question) {
     currentMode = "visual";
     lastPayload = payload;
@@ -1054,12 +1223,16 @@
         ${renderColumn("Videos", "video", videos, "Video results will appear here once the GBM YouTube index is connected.")}
         ${renderColumn("Podcasts", "podcast", podcasts, "Podcast results will appear here once the GBM podcast playlist is indexed.")}
       </div>
+
+      <div id="gbm-related-results" class="gbm-related-results"></div>
     `;
 
     const toggle = messages.querySelector(".gbm-toggle");
     if (toggle) {
       toggle.onclick = () => renderText(payload, question);
     }
+
+    bindMoreLikeButtons();
   }
 
   function renderText(payload, question) {
