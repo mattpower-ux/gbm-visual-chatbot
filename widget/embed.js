@@ -29,6 +29,7 @@
 
   let lastPayload = null;
   let currentMode = "visual";
+  let currentCardQuery = "";
 
   function abs(url) {
     if (!url) return "";
@@ -479,6 +480,17 @@
       box-sizing: border-box;
     }
 
+    .gbm-button-secondary {
+      margin-top: 8px;
+      border-color: #bfdad5;
+      background: #f4fbf9;
+      color: #0e6f82;
+    }
+
+    .gbm-button-secondary:hover {
+      background: #e8f6f3;
+    }
+
     .gbm-inputbar {
       background: white;
       border-top: 1px solid #dce5e2;
@@ -766,6 +778,34 @@
     return clean;
   }
 
+  function moreLikeThisUrl(type, item) {
+    const base = "https://www.greenbuildermedia.com/hs-search-results";
+
+    const rawTopic =
+      currentCardQuery ||
+      item.search_query ||
+      item.topic ||
+      item.category ||
+      item.title ||
+      "";
+
+    const topic = String(rawTopic)
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const scopedTopic = topic || (
+      type === "pdf"
+        ? "green building guides"
+        : type === "video"
+        ? "green building videos"
+        : type === "podcast"
+        ? "green building podcast"
+        : "green building articles"
+    );
+
+    return base + "?term=" + encodeURIComponent(scopedTopic);
+  }
+
   function renderCard(type, item) {
     const isVideo = type === "video" || type === "podcast";
     const yid = isVideo ? youtubeId(item.url || item.source_url || "") : "";
@@ -828,19 +868,23 @@
         <div class="gbm-card-desc">${esc(cardDescription(type, item))}</div>
 
         <div class="gbm-card-meta">
-          ${esc(source)}${item.page ? " · p. " + esc(item.page) : ""}
+          ${esc(source)}${item.page ? " Â· p. " + esc(item.page) : ""}
         </div>
 
         <a class="gbm-button" href="${abs(url)}" target="_blank" rel="noopener">
           ${
             type === "video"
-              ? "Watch on YouTube ↗"
+              ? "Watch on YouTube â†—"
               : type === "podcast"
-              ? "Listen / Watch ↗"
+              ? "Listen / Watch â†—"
               : type === "pdf"
-              ? "View PDF ↗"
-              : "Read Article ↗"
+              ? "View PDF â†—"
+              : "Read Article â†—"
           }
+        </a>
+
+        <a class="gbm-button gbm-button-secondary" href="${moreLikeThisUrl(type, item)}" target="_blank" rel="noopener">
+          More Like This â†—
         </a>
       </div>
     `;
@@ -906,10 +950,10 @@
 
             <div class="gbm-hot-links">
               <a class="gbm-hot-link gbm-hot-link-primary" href="${abs(articleUrl)}" target="_blank" rel="noopener">
-                Read full analysis ↗
+                Read full analysis â†—
               </a>
               <a class="gbm-hot-link" href="${COGNITION_SMART_DATA_URL}" target="_blank" rel="noopener">
-                More COGNITION insights ↗
+                More COGNITION insights â†—
               </a>
             </div>
           </div>
@@ -924,7 +968,7 @@
               />
             </a>
             <a class="gbm-expand-image" href="${abs(chartImage)}" target="_blank" rel="noopener">
-              Expand image ↗
+              Expand image â†—
             </a>
           </div>
         </div>
@@ -935,6 +979,7 @@
   function renderVisual(payload, question) {
     currentMode = "visual";
     lastPayload = payload;
+    currentCardQuery = question || "";
 
     const allCards = payload.cards || [];
     const allSources = payload.sources || [];
@@ -1086,7 +1131,7 @@
           </div>
 
           <div class="gbm-answer">
-            Sorry — the chatbot encountered an error.
+            Sorry â€” the chatbot encountered an error.
           </div>
         </div>
       `;
