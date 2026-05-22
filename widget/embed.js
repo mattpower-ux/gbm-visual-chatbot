@@ -448,6 +448,13 @@
       margin-bottom: 6px;
     }
 
+    .gbm-card-desc {
+      font-size: 12px;
+      line-height: 1.4;
+      color: #485955;
+      margin: 2px 0 8px;
+    }
+
     .gbm-card-meta {
       font-size: 12px;
       line-height: 1.4;
@@ -730,6 +737,35 @@
     return "/assets/covers/" + hyphenName;
   }
 
+  function cardDescription(type, item) {
+    const raw =
+      item.card_description ||
+      item.short_description ||
+      item.description ||
+      item.summary ||
+      item.excerpt ||
+      item.caption ||
+      "";
+
+    let clean = String(raw).replace(/\s+/g, " ").trim();
+
+    if (!clean) {
+      if (type === "video") return "A related Green Builder Media video on this topic.";
+      if (type === "podcast") return "A related Green Builder Media podcast episode on this topic.";
+      if (type === "pdf") return "A related Green Builder Media magazine or guide resource.";
+      return "A related Green Builder Media article on this topic.";
+    }
+
+    const firstSentence = clean.match(/^.{35,175}?[.!?](\s|$)/);
+    if (firstSentence) return firstSentence[0].trim();
+
+    if (clean.length > 150) {
+      clean = clean.slice(0, 147).replace(/\s+\S*$/, "").trim() + "...";
+    }
+
+    return clean;
+  }
+
   function renderCard(type, item) {
     const isVideo = type === "video" || type === "podcast";
     const yid = isVideo ? youtubeId(item.url || item.source_url || "") : "";
@@ -788,6 +824,8 @@
         }
 
         <div class="gbm-card-title">${esc(item.title || "Untitled")}</div>
+
+        <div class="gbm-card-desc">${esc(cardDescription(type, item))}</div>
 
         <div class="gbm-card-meta">
           ${esc(source)}${item.page ? " · p. " + esc(item.page) : ""}
