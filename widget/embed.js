@@ -449,6 +449,7 @@
       display: flex;
       flex-direction: column;
       flex: 1 1 auto;
+      min-height: 100%;
     }
 
     .gbm-card:first-of-type {
@@ -519,6 +520,13 @@
       margin: 2px 0 8px;
     }
 
+    .gbm-card-actions {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
     .gbm-card-meta {
       font-size: 12px;
       line-height: 1.4;
@@ -544,11 +552,11 @@
     }
 
     .gbm-card > .gbm-button:not(.gbm-button-secondary) {
-      margin-top: auto;
+      margin-top: 0;
     }
 
     .gbm-button-secondary {
-      margin-top: 8px;
+      margin-top: 0;
       border-color: #bfdad5;
       background: #f4fbf9;
       color: #0e6f82;
@@ -560,6 +568,13 @@
 
     .gbm-more-like-btn {
       font-family: inherit;
+      text-transform: uppercase;
+    }
+
+    .gbm-down-arrow {
+      display: inline-block;
+      margin-left: 6px;
+      line-height: 1;
     }
 
     .gbm-related-results {
@@ -1007,36 +1022,38 @@
         <div class="gbm-card-desc">${esc(cardDescription(type, item))}</div>
 
         <div class="gbm-card-meta">
-          ${esc(source)}${item.page ? " Â· p. " + esc(item.page) : ""}
+          ${esc(source)}${item.page ? " &middot; p. " + esc(item.page) : ""}
         </div>
 
-        <a class="gbm-button" href="${abs(url)}" target="_blank" rel="noopener">
-          ${
-            type === "video"
-              ? "Watch on YouTube â†’"
-              : type === "podcast"
-              ? "Listen / Watch â†’"
-              : type === "pdf"
-              ? "View PDF â†’"
-              : "Read Article â†’"
-          }
-        </a>
+        <div class="gbm-card-actions">
+          <a class="gbm-button" href="${abs(url)}" target="_blank" rel="noopener">
+            ${
+              type === "video"
+                ? "Watch on YouTube"
+                : type === "podcast"
+                ? "Listen / Watch"
+                : type === "pdf"
+                ? "View PDF"
+                : "Read Article"
+            }
+          </a>
 
-        ${
-          showMore
-            ? `
-              <button
-                class="gbm-button gbm-button-secondary gbm-more-like-btn"
-                type="button"
-                data-more-type="${esc(type)}"
-                data-more-title="${esc(item.title || "")}"
-                data-more-url="${esc(url)}"
-              >
-                More Like This â†“
-              </button>
-            `
-            : ""
-        }
+          ${
+            showMore
+              ? `
+                <button
+                  class="gbm-button gbm-button-secondary gbm-more-like-btn"
+                  type="button"
+                  data-more-type="${esc(type)}"
+                  data-more-title="${esc(item.title || "")}"
+                  data-more-url="${esc(url)}"
+                >
+                  MORE LIKE THIS <span class="gbm-down-arrow" aria-hidden="true">&darr;</span>
+                </button>
+              `
+              : ""
+          }
+        </div>
       </div>
     `;
   }
@@ -1101,10 +1118,10 @@
 
             <div class="gbm-hot-links">
               <a class="gbm-hot-link gbm-hot-link-primary" href="${abs(articleUrl)}" target="_blank" rel="noopener">
-                Read full analysis â†’
+                Read full analysis
               </a>
               <a class="gbm-hot-link" href="${COGNITION_SMART_DATA_URL}" target="_blank" rel="noopener">
-                More COGNITION insights â†’
+                More COGNITION insights
               </a>
             </div>
           </div>
@@ -1119,7 +1136,7 @@
               />
             </a>
             <a class="gbm-expand-image" href="${abs(chartImage)}" target="_blank" rel="noopener">
-              Expand image â†’
+              Expand image
             </a>
           </div>
         </div>
