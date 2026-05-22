@@ -1558,6 +1558,9 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
                 enriched["transcript_file"] = transcript.get("filename", "")
                 enriched["transcript_excerpt"] = transcript_preview[:240]
                 enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
+                if video.get("video_id"):
+                    enriched["transcript_url"] = f"/api/youtube-transcript/{video.get('video_id')}"
+                    enriched["transcriptUrl"] = enriched["transcript_url"]
             else:
                 enriched["has_transcript"] = False
             scored.append((score, enriched))
@@ -2395,6 +2398,56 @@ def admin_test_youtube_transcript_search(q: str = "heat pump", _: str = Depends(
         "video_count": len(videos),
         "videos": videos,
     }
+
+
+@app.get("/api/youtube-transcript/{video_id}")
+def public_youtube_transcript(video_id: str) -> Response:
+    """Serve a synced YouTube transcript as plain text for the visual chatbot.
+
+    This endpoint is public because the transcript button appears on public
+    YouTube result cards. It only returns a transcript when the video has a
+    matching synced .txt transcript in the transcript cache.
+    """
+    clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
+    if not clean_video_id:
+        raise HTTPException(status_code=404, detail="Transcript not found.")
+
+    videos = _load_youtube_videos()
+    video = next(
+        (
+            item for item in videos
+            if str(item.get("video_id", "") or "").strip() == clean_video_id
+        ),
+        {"video_id": clean_video_id, "title": clean_video_id},
+    )
+
+    transcript = _transcript_for_video(video, _load_youtube_transcripts())
+    if not transcript:
+        raise HTTPException(status_code=404, detail="Transcript not found.")
+
+    title = str(transcript.get("title") or video.get("title") or clean_video_id).strip()
+    speakers = str(transcript.get("speakers") or "").strip()
+    source_url = str(video.get("url") or transcript.get("url") or "").strip()
+    text = str(transcript.get("text") or "").strip()
+
+    header_lines = [title]
+    if source_url:
+        header_lines.append(source_url)
+    if speakers:
+        header_lines.append(f"Speakers: {speakers}")
+
+    body = "\n".join(header_lines).strip() + "\n\n" + text + "\n"
+
+    safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-") or clean_video_id
+    headers = {
+        "Content-Disposition": f'inline; filename="{safe_filename[:80]}-transcript.txt"'
+    }
+
+    return Response(
+        body,
+        media_type="text/plain; charset=utf-8",
+        headers=headers,
+    )
 
 
 
