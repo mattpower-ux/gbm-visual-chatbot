@@ -39,6 +39,28 @@
     return API_BASE + "/" + s.replace(/^\/+/, "");
   }
 
+  function transcriptUrl(item) {
+    if (!item) return "";
+
+    const direct =
+      item.transcript_url ||
+      item.transcriptUrl ||
+      item.google_drive_transcript ||
+      item.drive_transcript_url ||
+      item.driveTranscriptUrl ||
+      item.transcript_drive_url ||
+      item.transcriptDriveUrl ||
+      "";
+
+    if (direct) return abs(direct);
+
+    if (item.has_transcript && item.video_id) {
+      return abs(`/api/youtube-transcript/${encodeURIComponent(item.video_id)}`);
+    }
+
+    return "";
+  }
+
   function esc(str) {
     return String(str || "")
       .replace(/&/g, "&amp;")
@@ -430,6 +452,44 @@
       border-top: 0;
       padding-top: 0;
       margin-top: 0;
+    }
+
+    .gbm-card-media {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16/9;
+      margin-bottom: 10px;
+    }
+
+    .gbm-card-media .gbm-thumb,
+    .gbm-card-media .gbm-player {
+      margin-bottom: 0;
+    }
+
+    .gbm-transcript-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 5;
+      background: rgba(255,255,255,.96);
+      border: 2px solid #0087a7;
+      color: #006d86;
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .04em;
+      padding: 6px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      transition: all .18s ease;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    }
+
+    .gbm-transcript-btn:hover {
+      background: #0087a7;
+      color: white;
+      transform: translateY(-1px);
     }
 
     .gbm-thumb {
@@ -902,24 +962,39 @@
 
     return `
       <div class="gbm-card">
-        ${
-          isVideo && yid
-            ? `
-              <iframe
-                class="gbm-player"
-                src="https://www.youtube.com/embed/${esc(yid)}"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowfullscreen
-              ></iframe>
-            `
-            : `
-              <img
-                class="gbm-thumb"
-                src="${abs(img)}"
-                onerror="this.onerror=null;this.src='${abs(fallback)}';"
-              />
-            `
-        }
+        <div class="gbm-card-media">
+          ${
+            type === "video" && transcriptUrl(item)
+              ? `
+                <a
+                  class="gbm-transcript-btn"
+                  href="${esc(transcriptUrl(item))}"
+                  target="_blank"
+                  rel="noopener"
+                >FULL TRANSCRIPT</a>
+              `
+              : ""
+          }
+
+          ${
+            isVideo && yid
+              ? `
+                <iframe
+                  class="gbm-player"
+                  src="https://www.youtube.com/embed/${esc(yid)}"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowfullscreen
+                ></iframe>
+              `
+              : `
+                <img
+                  class="gbm-thumb"
+                  src="${abs(img)}"
+                  onerror="this.onerror=null;this.src='${abs(fallback)}';"
+                />
+              `
+          }
+        </div>
 
         <div class="gbm-card-title">${esc(item.title || "Untitled")}</div>
 
@@ -932,12 +1007,12 @@
         <a class="gbm-button" href="${abs(url)}" target="_blank" rel="noopener">
           ${
             type === "video"
-              ? "Watch on YouTube â†—"
+              ? "Watch on YouTube â†’"
               : type === "podcast"
-              ? "Listen / Watch â†—"
+              ? "Listen / Watch â†’"
               : type === "pdf"
-              ? "View PDF â†—"
-              : "Read Article â†—"
+              ? "View PDF â†’"
+              : "Read Article â†’"
           }
         </a>
 
@@ -951,7 +1026,7 @@
                 data-more-title="${esc(item.title || "")}"
                 data-more-url="${esc(url)}"
               >
-                More Like This ↓
+                More Like This â†“
               </button>
             `
             : ""
@@ -1020,10 +1095,10 @@
 
             <div class="gbm-hot-links">
               <a class="gbm-hot-link gbm-hot-link-primary" href="${abs(articleUrl)}" target="_blank" rel="noopener">
-                Read full analysis â†—
+                Read full analysis â†’
               </a>
               <a class="gbm-hot-link" href="${COGNITION_SMART_DATA_URL}" target="_blank" rel="noopener">
-                More COGNITION insights â†—
+                More COGNITION insights â†’
               </a>
             </div>
           </div>
@@ -1038,7 +1113,7 @@
               />
             </a>
             <a class="gbm-expand-image" href="${abs(chartImage)}" target="_blank" rel="noopener">
-              Expand image â†—
+              Expand image â†’
             </a>
           </div>
         </div>
