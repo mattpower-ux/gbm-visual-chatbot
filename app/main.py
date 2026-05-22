@@ -2397,6 +2397,149 @@ def admin_test_youtube_transcript_search(q: str = "heat pump", _: str = Depends(
     }
 
 
+
+def _public_card_from_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a public indexed chunk into a visual card dict."""
+    if not _is_public_chunk(chunk):
+        return None
+
+    url = str(chunk.get("url", "") or "").strip()
+    if not url:
+        return None
+
+    if _is_magazine_chunk(chunk):
+        return _magazine_card_from_chunk(chunk)
+
+    source_type = _detect_source_type(chunk)
+    if source_type == "magazine":
+        return _magazine_card_from_chunk(chunk)
+
+    image = _thumbnail_from_chunk_or_source(chunk, {}, url)
+    title = chunk.get("title") or chunk.get("source_name") or "Green Builder Media Resource"
+
+    return {
+        "title": str(title),
+        "url": url,
+        "source": chunk.get("attribution_label") or "Green Builder Media",
+        "category": chunk.get("category") or source_type or "Article",
+        "image": image,
+        "thumbnail": image,
+        "thumbnail_url": image,
+        "type": source_type,
+        "excerpt": str(chunk.get("text", "") or "")[:320].strip(),
+        "published_at": chunk.get("published_at"),
+    }
+
+
+def _related_search_query(original_query: str, title: str) -> str:
+    """Blend the card title with the original user query for controlled related search."""
+    q = (original_query or "").strip()
+    t = (title or "").strip()
+
+    if q and t:
+        return f"{t} {q}"
+    return t or q
+
+
+def _dedupe_cards(cards: list[dict[str, Any]], exclude_url: str = "") -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    cleaned: list[dict[str, Any]] = []
+    exclude = str(exclude_url or "").strip()
+
+    for card in cards:
+        url = str(card.get("url", "") or "").strip()
+        if not url:
+            continue
+        if exclude and url == exclude:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        cleaned.append(card)
+
+    return cleaned
+
+
+@app.get("/api/related-cards")
+def related_cards(
+    q: str = "",
+    type: str = "article",
+    title: str = "",
+    url: str = "",
+    limit: int = 4,
+) -> dict:
+    """Return controlled 'More Like This' cards for one existing media card.
+
+    This is intentionally not a generic website search. It uses the same
+    chatbot retrieval/ranking stack, seeded by the card title plus the user's
+    original query, and returns up to four relevant cards.
+    """
+    card_type = (type or "article").strip().lower()
+    limit = max(1, min(int(limit or 4), 4))
+    related_query = _related_search_query(q, title)
+
+    if not related_query:
+        return {
+            "ok": True,
+            "query": related_query,
+            "type": card_type,
+            "cards": [],
+            "message": "No related query was available.",
+        }
+
+    cards: list[dict[str, Any]] = []
+
+    if card_type == "video":
+        cards = search_youtube_videos(related_query, limit=limit + 4)
+        cards = _dedupe_cards(cards, exclude_url=url)[:limit]
+    elif card_type == "podcast":
+        cards = search_podcasts(related_query, limit=limit + 4)
+        cards = _dedupe_cards(cards, exclude_url=url)[:limit]
+    elif card_type in {"pdf", "magazine"}:
+        cards = search_magazine_pdf_cards(related_query, limit=limit + 4)
+        cards = _dedupe_cards(cards, exclude_url=url)[:limit]
+    else:
+        try:
+            try:
+                chunks = search(related_query, limit=36)
+            except TypeError:
+                chunks = search(related_query)
+
+            chunks = _apply_smart_ranking(chunks, related_query)
+            found: list[dict[str, Any]] = []
+
+            for chunk in chunks:
+                if _is_magazine_chunk(chunk):
+                    continue
+
+                source_type = _detect_source_type(chunk)
+                if source_type not in {"blog", "webpage"}:
+                    continue
+
+                card = _public_card_from_chunk(chunk)
+                if card:
+                    found.append(card)
+
+            cards = _dedupe_cards(found, exclude_url=url)[:limit]
+        except Exception as exc:
+            return {
+                "ok": False,
+                "query": related_query,
+                "type": card_type,
+                "cards": [],
+                "message": f"Related-card search failed: {exc}",
+                "error": str(exc),
+            }
+
+    return {
+        "ok": True,
+        "query": related_query,
+        "type": card_type,
+        "cards": cards,
+        "count": len(cards),
+    }
+
+
 @app.get("/api/admin/test-pdf-cards")
 def admin_test_pdf_cards(q: str = "home electrification", _: str = Depends(admin_auth)) -> dict:
     cards = search_magazine_pdf_cards(q, limit=10)
