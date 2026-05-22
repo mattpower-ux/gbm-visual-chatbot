@@ -951,7 +951,7 @@
                 data-more-title="${esc(item.title || "")}"
                 data-more-url="${esc(url)}"
               >
-                More Like This
+                More Like This ↓
               </button>
             `
             : ""
