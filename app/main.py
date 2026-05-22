@@ -637,22 +637,55 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]], question: str = "") -> li
     - HubSpot / landing / resource / webinar / offer pages
     - recent content
     - pages that have real crawler images
+    - dedicated event/symposium blogs and landing pages for event queries
     """
     ranked_chunks: list[dict[str, Any]] = []
     requested_years = _query_years(question)
+    q_lower = (question or "").lower()
+
+    event_query = any(
+        term in q_lower
+        for term in (
+            "symposium",
+            "conference",
+            "summit",
+            "webinar",
+            "event",
+            "events",
+            "register",
+            "registration",
+        )
+    )
+
+    query_terms = [
+        term for term in re.findall(r"[a-z0-9]{3,}", q_lower)
+        if term not in {
+            "the", "and", "for", "with", "from", "that", "this", "what", "how",
+            "why", "are", "was", "were", "about", "green", "builder", "media",
+            "tell", "show", "give", "find", "content", "article", "articles",
+        }
+    ]
 
     for index, chunk in enumerate(chunks or []):
         ranked = dict(chunk)
         source_type = _detect_source_type(ranked)
         url = str(ranked.get("url", "") or "").lower()
+        title = str(ranked.get("title", "") or ranked.get("source_name", "") or "").lower()
+        text = str(ranked.get("text", "") or "").lower()
         chunk_years = _chunk_years(ranked)
 
         # Base score: lower is better because _result_rank_score normalizes
         # high-similarity scores into negative values and vector distances into positive values.
         rank_score = _result_rank_score(ranked)
 
-        # Multipliers below reduce rank_score for boosted items, moving them upward in ascending sort.
+        # Multipliers below gently adjust the vector score.
         multiplier = 1.0
+
+        # Additive boosts/penalties are subtracted/added after multiplication.
+        # This works whether the underlying search uses positive distances
+        # or negative similarity-style scores.
+        additive_boost = 0.0
+        additive_penalty = 0.0
 
         # Strategic source boosts: let landing/resource/webinar/offer pages compete with blogs.
         if any(pattern in url for pattern in [
@@ -661,8 +694,58 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]], question: str = "") -> li
             "/guides/", "/reports/",
         ]):
             multiplier *= 0.82
+            additive_boost += 0.10
         elif source_type == "blog":
             multiplier *= 0.95
+            additive_boost += 0.06
+
+        # Event / symposium relevance boost.
+        #
+        # For broad searches like "symposium", the best result is usually a
+        # dedicated current-year blog or landing page, not an older PDF/video
+        # that happens to repeat the same word. This block promotes dedicated
+        # event pages and fresh event announcement posts while keeping the
+        # underlying semantic search as the first pass.
+        if event_query:
+            # Promote relevant current-year event content.
+            if "sustainability symposium" in title:
+                additive_boost += 0.70
+            elif "symposium" in title or "conference" in title or "summit" in title:
+                additive_boost += 0.45
+
+            if "sustainability-symposium" in url or "symposium" in url:
+                additive_boost += 0.45
+            if "systems-reckoning" in url or "systems reckoning" in title:
+                additive_boost += 0.45
+
+            # Query-term matches in title/URL are stronger than matches buried
+            # deep in long body text.
+            for term in query_terms:
+                if term in title:
+                    additive_boost += 0.16
+                if term in url:
+                    additive_boost += 0.12
+
+            # If the user asks broadly for symposium content, prefer the
+            # newest indexed symposium year over older archives.
+            if not requested_years:
+                if "2026" in title or "2026" in url or "2026" in text[:1200]:
+                    additive_boost += 0.35
+                elif "2025" in title or "2025" in url or "2025" in text[:1200]:
+                    additive_boost += 0.12
+
+            # Strongly prefer live blog/webpage event pages over PDFs/videos
+            # for the primary answer context and article/web cards.
+            if source_type == "blog":
+                additive_boost += 0.32
+            elif source_type == "webpage":
+                additive_boost += 0.24
+            elif source_type == "magazine":
+                additive_penalty += 0.32
+
+            # Registration/date language is a useful signal for event pages.
+            if any(term in text[:2000] for term in ("register now", "reserve your spot", "free, virtual event", "scheduled for", "june 3", "june 4")):
+                additive_boost += 0.25
 
         # Year-aware ranking for magazine questions such as "2020 coverage".
         # This fixes the problem where one older PDF issue can dominate answers
@@ -670,8 +753,10 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]], question: str = "") -> li
         if requested_years:
             if chunk_years & requested_years:
                 multiplier *= 0.45
+                additive_boost += 0.25
             elif source_type == "magazine":
                 multiplier *= 2.8
+                additive_penalty += 0.25
 
         # Freshness boost.
         published = _parse_datetime_for_ranking(ranked.get("published_at"))
@@ -679,10 +764,13 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]], question: str = "") -> li
             age_days = max((datetime.utcnow() - published).days, 0)
             if age_days <= 30:
                 multiplier *= 0.84
+                additive_boost += 0.24 if event_query else 0.08
             elif age_days <= 90:
                 multiplier *= 0.92
+                additive_boost += 0.18 if event_query else 0.05
             elif age_days <= 365:
                 multiplier *= 0.97
+                additive_boost += 0.08 if event_query else 0.02
 
         # Visual-content boost for better card results.
         if (
@@ -693,9 +781,12 @@ def _apply_smart_ranking(chunks: list[dict[str, Any]], question: str = "") -> li
             or ranked.get("thumbnail_url")
         ):
             multiplier *= 0.92
+            additive_boost += 0.04
 
-        ranked["_smart_rank"] = rank_score * multiplier
+        ranked["_smart_rank"] = (rank_score * multiplier) - additive_boost + additive_penalty
         ranked["_smart_rank_original"] = index
+        ranked["_smart_rank_boost"] = additive_boost
+        ranked["_smart_rank_penalty"] = additive_penalty
         ranked_chunks.append(ranked)
 
     return sorted(
