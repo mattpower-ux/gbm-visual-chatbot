@@ -75,7 +75,7 @@ YOUTUBE_MAX_SYNC_RESULTS = int(os.getenv("YOUTUBE_MAX_SYNC_RESULTS", "250"))
 # === YouTube Transcript Cache ===
 YOUTUBE_TRANSCRIPT_DIR = Path(os.getenv("YOUTUBE_TRANSCRIPT_DIR", "/data/youtube_transcripts"))
 YOUTUBE_TRANSCRIPT_CACHE_FILE = Path(os.getenv("YOUTUBE_TRANSCRIPT_CACHE_FILE", "/data/youtube_transcripts.json"))
-YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID = os.getenv("YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID", "").strip()
+YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID = os.getenv("YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID", "1hXT7nfA0whFuo43oFl_tspgwKbtI0eaz").strip()
 GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "").strip()
 ENABLE_TRANSCRIPT_AUTO_SYNC = os.getenv("ENABLE_TRANSCRIPT_AUTO_SYNC", "false").strip().lower() in {
     "1", "true", "yes", "on",
@@ -1262,12 +1262,20 @@ def _download_drive_transcripts() -> dict[str, Any]:
         skipped: list[str] = []
 
         for item in files:
-            name = item.get("name", "")
-            if not name.lower().endswith(".txt"):
-                skipped.append(f"{name} (not .txt)")
+            name = item.get("name", "") or "untitled-transcript"
+            mime_type = item.get("mimeType", "") or ""
+
+            is_google_doc = mime_type == "application/vnd.google-apps.document"
+            is_plain_text = mime_type.startswith("text/") or name.lower().endswith(".txt")
+
+            if not (is_google_doc or is_plain_text):
+                skipped.append(f"{name} ({mime_type or 'unsupported type'})")
                 continue
 
             safe_name = Path(name).name
+            if is_google_doc and not safe_name.lower().endswith(".txt"):
+                safe_name = f"{Path(safe_name).stem}.txt"
+
             target = YOUTUBE_TRANSCRIPT_DIR / safe_name
 
             # Skip files already present. This keeps local edits stable and avoids unnecessary downloads.
@@ -1275,7 +1283,14 @@ def _download_drive_transcripts() -> dict[str, Any]:
                 skipped.append(f"{safe_name} (already exists)")
                 continue
 
-            request = service.files().get_media(fileId=item["id"])
+            if is_google_doc:
+                request = service.files().export_media(
+                    fileId=item["id"],
+                    mimeType="text/plain",
+                )
+            else:
+                request = service.files().get_media(fileId=item["id"])
+
             buffer = io.BytesIO()
             downloader = MediaIoBaseDownload(buffer, request)
 
@@ -1567,11 +1582,10 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
                 enriched["transcriptUrl"] = transcript_endpoint
                 enriched["drive_transcript_url"] = transcript_endpoint
                 enriched["google_drive_transcript"] = transcript_endpoint
-
             else:
                 enriched["has_transcript"] = False
                 enriched["transcript_url"] = ""
-                enriched["transcriptUrl"] = 
+                enriched["transcriptUrl"] = ""
             scored.append((score, enriched))
 
     scored.sort(key=lambda item: item[0], reverse=True)
