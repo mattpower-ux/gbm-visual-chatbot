@@ -1,4 +1,29 @@
 (function () {
+  if (window.GBM_DEEPTHINK_LOADED) return;
+  window.GBM_DEEPTHINK_LOADED = true;
+
+  const SCRIPT = document.currentScript;
+  const API_BASE = (SCRIPT && SCRIPT.dataset.apiBase) || "https://gbm-visual-chatbot.onrender.com";
+  const COGNITION_LOGO_URL = "https://7820107.fs1.hubspotusercontent-na1.net/hubfs/7820107/Cognition%20Button.png";
+  const COGNITION_SMART_DATA_URL = "https://www.greenbuildermedia.com/cognition-smart-data";
+
+  let currentMode = "visual";
+  let lastPayload = null;
+  let lastQuestion = "";
+  let sessionId = localStorage.getItem("gbm_deepthink_session_id");
+
+  if (!sessionId) {
+    sessionId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem("gbm_deepthink_session_id", sessionId);
+  }
+
+  const style = document.createElement("style");
+
+  style.textContent = `
+    :root {
+      --gbm-blue: #128fdb;
+      --gbm-blue-dark: #0b5f92;
+(function () {
 if (window.GBM_DEEPTHINK_LOADED) return;
 window.GBM_DEEPTHINK_LOADED = true;
 
