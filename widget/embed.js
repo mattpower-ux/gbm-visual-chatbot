@@ -1,843 +1,724 @@
+```javascript
 (function () {
   if (window.GBM_DEEPTHINK_LOADED) return;
   window.GBM_DEEPTHINK_LOADED = true;
 
-  const currentScript = document.currentScript;
+  const SCRIPT = document.currentScript;
+  const API_BASE = (SCRIPT && SCRIPT.dataset.apiBase) || "https://gbm-visual-chatbot.onrender.com";
+  const COGNITION_LOGO_URL = "https://7820107.fs1.hubspotusercontent-na1.net/hubfs/7820107/Cognition%20Button.png";
+  const COGNITION_SMART_DATA_URL = "https://www.greenbuildermedia.com/cognition-smart-data";
 
-  const API_BASE = (
-    currentScript?.dataset.apiBase ||
-    "https://gbm-visual-chatbot.onrender.com"
-  ).replace(/\/$/, "");
-
-  const CHATBOT_TITLE =
-    currentScript?.dataset.chatbotTitle ||
-    "COGNITION DeepDive";
-
-  const COGNITION_LOGO_URL =
-    currentScript?.dataset.logoUrl ||
-    "https://www.greenbuildermedia.com/hubfs/Cognition%20DeepDive%20Images/cognition%20button.png";
-
-  const COGNITION_SMART_DATA_URL =
-    "https://www.greenbuildermedia.com/cognition-smart-data";
-
-  const COGNITION_FALLBACK_CHART_URL =
-    currentScript?.dataset.hotTakeImage ||
-    "https://www.greenbuildermedia.com/hubfs/Cognition%20DeepDive%20Images/cognition%20button.png";
-
-  const root = document.createElement("div");
-  document.body.appendChild(root);
-
-  let lastPayload = null;
   let currentMode = "visual";
-
-  function abs(url) {
-    if (!url) return "";
-    const s = String(url).trim();
-    if (s.startsWith("http://") || s.startsWith("https://")) return s;
-    if (s.startsWith("/")) return API_BASE + s;
-    return API_BASE + "/" + s.replace(/^\/+/, "");
+  let lastPayload = null;
+  let lastQuestion = "";
+  let sessionId = localStorage.getItem("gbm_deepthink_session_id");
+  if (!sessionId) {
+    sessionId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem("gbm_deepthink_session_id", sessionId);
   }
 
-  function esc(str) {
-    return String(str || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function icon(type) {
-    const icons = {
-      article: `<svg viewBox="0 0 24 24"><path d="M5 4h10l4 4v12H5z"/><path d="M15 4v5h5"/><path d="M8 13h8"/><path d="M8 17h6"/></svg>`,
-      pdf: `<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5"/><path d="M8 15h2"/><path d="M13 15h2"/></svg>`,
-      video: `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>`,
-      podcast: `<svg viewBox="0 0 24 24"><circle cx="12" cy="11" r="3"/><path d="M6 11a6 6 0 0 1 12 0"/><path d="M12 14v7"/><path d="M9.5 21h5"/></svg>`,
-      close: `<svg viewBox="0 0 24 24"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>`
-    };
-    return icons[type] || "";
-  }
-
-  root.innerHTML = `
-  <style>
-    .gbm-launcher {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      z-index: 999999;
-      background: linear-gradient(135deg,#0087a7,#006d86);
-      color: white;
-      border-radius: 999px;
-      padding: 10px 18px 10px 10px;
-      font-family: Arial, sans-serif;
-      font-weight: 900;
-      letter-spacing: .02em;
-      cursor: pointer;
-      box-shadow: 0 10px 30px rgba(0,0,0,.25);
-      display: flex;
-      align-items: center;
-      gap: 12px;
+  const style = document.createElement("style");
+  style.textContent = `
+    :root {
+      --gbm-blue: #128fdb;
+      --gbm-blue-dark: #0b5f92;
+      --gbm-ink: #163244;
+      --gbm-muted: #5f7180;
+      --gbm-card: #ffffff;
+      --gbm-soft: #f2f8fc;
+      --gbm-line: rgba(22, 50, 68, .13);
+      --gbm-shadow: 0 18px 50px rgba(16, 71, 113, .18);
     }
 
-    .gbm-launcher-logo,
-    .gbm-mark,
-    .gbm-avatar {
+    #gbm-deepthink-launcher {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      width: 74px;
+      height: 74px;
       border-radius: 50%;
+      border: 0;
+      cursor: pointer;
+      box-shadow: 0 14px 34px rgba(0,0,0,.28);
+      background: #ffffff;
+      padding: 7px;
+      z-index: 2147483000;
       overflow: hidden;
-      position: relative;
-      flex: 0 0 auto;
-      background: transparent;
-      display: flex;
-      align-items: center;
-      justify-content: center;
     }
 
-    .gbm-launcher-logo {
-      width: 60px;
-      height: 60px;
-    }
-
-    .gbm-launcher-logo img {
-      width: 60px;
-      height: 60px;
-      object-fit: contain;
+    #gbm-deepthink-launcher img {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
       display: block;
-    }
-
-    .gbm-mark {
-      width: 64px;
-      height: 64px;
-    }
-
-    .gbm-mark img {
-      width: 64px;
-      height: 64px;
       object-fit: contain;
-      display: block;
+      background: #fff;
     }
 
-    .gbm-avatar {
-      width: 52px;
-      height: 52px;
+    #gbm-deepthink-launcher::after {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background: linear-gradient(120deg, transparent 35%, rgba(18,143,219,.28), transparent 65%);
+      transform: translateX(-80%) rotate(20deg);
+      animation: gbmPulseSweep 3.8s ease-in-out 1;
+      pointer-events: none;
     }
 
-    .gbm-avatar img {
-      width: 52px;
-      height: 52px;
-      object-fit: contain;
-      display: block;
+    @keyframes gbmPulseSweep {
+      0% { transform: translateX(-90%) rotate(20deg); opacity: 0; }
+      18% { opacity: 1; }
+      52% { transform: translateX(85%) rotate(20deg); opacity: .9; }
+      100% { transform: translateX(85%) rotate(20deg); opacity: 0; }
     }
 
-    .gbm-panel {
+    #gbm-deepthink-panel {
       position: fixed;
-      top: 24px;
-      bottom: 24px;
-      right: 24px;
-      left: auto;
-      width: min(950px, calc(100vw - 80px));
-      z-index: 999998;
-      background: #f5f8f7;
-      border-radius: 18px;
-      display: none;
-      flex-direction: column;
+      right: 22px;
+      bottom: 108px;
+      width: min(1080px, calc(100vw - 44px));
+      height: min(760px, calc(100vh - 140px));
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      border: 1px solid var(--gbm-line);
+      border-radius: 26px;
+      box-shadow: var(--gbm-shadow);
+      z-index: 2147483001;
       overflow: hidden;
-      box-shadow: 0 30px 80px rgba(0,0,0,.35);
-      border: 1px solid rgba(0,0,0,.08);
-      font-family: Arial, sans-serif;
-      color: #1f2937;
+      display: none;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--gbm-ink);
     }
 
-    .gbm-header {
-      background: linear-gradient(135deg,#0087a7,#006d86);
+    #gbm-deepthink-panel.gbm-open { display: flex; flex-direction: column; }
+
+    .gbm-head {
+      background:
+        radial-gradient(circle at 20% 10%, rgba(255,255,255,.25), transparent 24%),
+        linear-gradient(135deg, #064b76 0%, #128fdb 100%);
       color: white;
-      padding: 18px 24px;
+      padding: 16px 18px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      flex: 0 0 auto;
+      justify-content: space-between;
+      gap: 14px;
     }
 
-    .gbm-header-left {
+    .gbm-brand {
       display: flex;
       align-items: center;
       gap: 12px;
+      min-width: 0;
+    }
+
+    .gbm-brand img {
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: white;
+      object-fit: contain;
+      flex: 0 0 auto;
     }
 
     .gbm-title {
-      font-size: 22px;
-      font-weight: 900;
-      letter-spacing: -.02em;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: .01em;
+      line-height: 1.15;
+    }
+
+    .gbm-subtitle {
+      font-size: 12px;
+      opacity: .92;
+      margin-top: 3px;
+      line-height: 1.25;
+      max-width: 760px;
     }
 
     .gbm-close {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      border: 0;
-      background: rgba(255,255,255,.12);
+      border: 1px solid rgba(255,255,255,.5);
+      background: rgba(255,255,255,.14);
       color: white;
+      border-radius: 999px;
+      width: 36px;
+      height: 36px;
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      font-size: 22px;
+      line-height: 1;
+      flex: 0 0 auto;
     }
 
-    .gbm-close svg,
-    .gbm-icon svg {
-      width: 18px;
-      height: 18px;
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 2;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-
-    .gbm-messages {
+    .gbm-body {
       flex: 1;
-      overflow-y: auto;
-      padding: 24px;
+      overflow: auto;
+      padding: 18px;
     }
 
     .gbm-welcome {
-      background: white;
-      border-radius: 16px;
-      border: 1px solid #dce5e2;
+      background: #ffffff;
+      border: 1px solid var(--gbm-line);
+      border-radius: 20px;
       padding: 18px;
-      max-width: 700px;
-      line-height: 1.55;
-      box-shadow: 0 8px 24px rgba(0,0,0,.04);
+      box-shadow: 0 8px 26px rgba(18,143,219,.08);
+      margin-bottom: 14px;
     }
 
-    .gbm-user {
-      margin-left: auto;
-      background: #e5f3ee;
-      border: 1px solid #cce3db;
-      border-radius: 16px;
-      padding: 14px 18px;
-      max-width: 70%;
-      width: fit-content;
-      margin-top: 22px;
-      margin-bottom: 18px;
-      font-weight: 700;
+    .gbm-welcome-title {
+      font-size: 20px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    .gbm-welcome-text {
+      color: var(--gbm-muted);
+      font-size: 14px;
+      line-height: 1.48;
+    }
+
+    .gbm-messages {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .gbm-question {
+      align-self: flex-end;
+      max-width: 80%;
+      background: var(--gbm-blue);
+      color: #ffffff;
+      border-radius: 18px 18px 4px 18px;
+      padding: 12px 14px;
+      font-size: 14px;
       line-height: 1.45;
+      box-shadow: 0 8px 18px rgba(18,143,219,.18);
     }
 
     .gbm-answer-wrap {
-      display: flex;
-      gap: 14px;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 10px;
       align-items: flex-start;
     }
 
-    .gbm-answer {
-      flex: 1;
-      background: white;
-      border-radius: 16px;
-      border: 1px solid #dce5e2;
-      padding: 20px;
-      line-height: 1.65;
-      box-shadow: 0 8px 24px rgba(0,0,0,.04);
-    }
-
-    .gbm-answer a {
-      color: #0087a7;
-      text-decoration: none;
-      font-weight: 800;
-    }
-
-.gbm-toggle {
-  margin-top: 10px;
-  margin-left: 102px;
-  margin-bottom: 18px;
-  color: #0087a7;
-  font-size: 13px;
-  font-weight: 900;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  cursor: pointer;
-  line-height: 1;
-}
-    .gbm-hot-take {
-      margin-left: 60px;
-      margin-top: 22px;
-      margin-bottom: 28px;
-      background: white;
-      border: 1px solid #dce5e2;
-      border-radius: 18px;
-      box-shadow: 0 8px 24px rgba(0,0,0,.04);
+    .gbm-avatar {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: #ffffff;
+      border: 1px solid var(--gbm-line);
+      display: flex;
+      align-items: center;
+      justify-content: center;
       overflow: hidden;
+    }
+
+    .gbm-avatar img {
+      width: 34px;
+      height: 34px;
+      object-fit: contain;
+      border-radius: 50%;
+    }
+
+    .gbm-answer {
+      background: #ffffff;
+      border: 1px solid var(--gbm-line);
+      border-radius: 18px 18px 18px 4px;
+      padding: 14px 15px;
+      line-height: 1.55;
+      font-size: 14px;
+      color: var(--gbm-ink);
+      box-shadow: 0 8px 26px rgba(16,71,113,.07);
+    }
+
+    .gbm-toggle {
+      color: var(--gbm-blue-dark);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: -4px 0 2px 52px;
+      cursor: pointer;
+      width: fit-content;
+    }
+
+    .gbm-toggle:hover { text-decoration: underline; }
+
+    .gbm-hot-take {
+      background: linear-gradient(135deg, rgba(18,143,219,.10), rgba(255,255,255,1));
+      border: 1px solid rgba(18,143,219,.25);
+      border-radius: 22px;
+      padding: 14px;
+      margin: 4px 0 4px 52px;
+      box-shadow: 0 10px 28px rgba(18,143,219,.10);
     }
 
     .gbm-hot-take-inner {
       display: grid;
-      grid-template-columns: minmax(0,.95fr) minmax(280px,1.05fr);
-      align-items: stretch;
-    }
-
-    .gbm-hot-copy {
-      padding: 22px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
+      grid-template-columns: minmax(0, 1fr) 260px;
+      gap: 14px;
+      align-items: center;
     }
 
     .gbm-hot-kicker {
-      color: #0087a7;
-      font-size: 13px;
-      font-weight: 900;
-      text-transform: uppercase;
-      letter-spacing: .08em;
-      margin-bottom: 10px;
-    }
-
-    .gbm-hot-title {
-      font-size: 20px;
-      line-height: 1.2;
-      font-weight: 900;
-      color: #163d35;
-      margin-bottom: 12px;
-    }
-
-    .gbm-hot-caption {
-      font-size: 14px;
-      line-height: 1.55;
-      color: #44514d;
-      margin-bottom: 16px;
-    }
-
-    .gbm-hot-links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 2px;
-    }
-
-    .gbm-hot-link {
-      border-radius: 999px;
-      border: 1px solid #0087a7;
-      background: white;
-      color: #0087a7;
-      font-size: 12px;
-      font-weight: 900;
-      padding: 9px 13px;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .gbm-hot-link-primary {
-      background: #0087a7;
-      color: white;
-    }
-
-    .gbm-hot-image-wrap {
-      background: #edf5f2;
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      gap: 10px;
-    }
-
-    .gbm-hot-image {
-      width: 100%;
-      max-height: 360px;
-      object-fit: contain;
-      border-radius: 12px;
-      background: white;
-      display: block;
-      box-shadow: 0 8px 24px rgba(0,0,0,.06);
-    }
-
-    .gbm-expand-image {
-      align-self: flex-end;
-      color: #0087a7;
-      font-size: 12px;
-      font-weight: 900;
-      text-decoration: none;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-    }
-
-    .gbm-section-title {
-      margin-top: 24px;
-      margin-bottom: 12px;
-      margin-left: 60px;
-      color: #0087a7;
-      font-size: 14px;
-      font-weight: 900;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-    }
-
-    .gbm-grid {
-      display: grid;
-      grid-template-columns: repeat(4,minmax(0,1fr));
-      gap: 14px;
-      margin-left: 60px;
-      margin-bottom: 26px;
-    }
-
-    .gbm-column {
-      background: white;
-      border-radius: 16px;
-      border: 1px solid #dce5e2;
-      padding: 14px;
-      box-shadow: 0 8px 24px rgba(0,0,0,.04);
-      min-width: 0;
-    }
-
-    .gbm-column-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 12px;
-      font-weight: 900;
-      color: #163d35;
-      font-size: 14px;
-    }
-
-    .gbm-icon {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: #e6f3ee;
-      color: #0087a7;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
-    }
-
-    .gbm-count {
-      margin-left: auto;
-      background: #edf5f2;
-      border-radius: 999px;
-      padding: 3px 8px;
       font-size: 11px;
-      color: #66736f;
-      font-weight: 900;
-    }
-
-    .gbm-card {
-      border-top: 1px solid #edf2f2;
-      padding-top: 12px;
-      margin-top: 12px;
-    }
-
-    .gbm-card:first-of-type {
-      border-top: 0;
-      padding-top: 0;
-      margin-top: 0;
-    }
-
-    .gbm-thumb {
-      width: 100%;
-      aspect-ratio: 16/9;
-      object-fit: cover;
-      border-radius: 10px;
-      background: #edf2f2;
-      display: block;
-      margin-bottom: 10px;
-    }
-
-    .gbm-card-title {
-      font-size: 13px;
-      line-height: 1.35;
+      text-transform: uppercase;
+      letter-spacing: .09em;
+      color: var(--gbm-blue-dark);
       font-weight: 900;
       margin-bottom: 6px;
     }
 
-    .gbm-card-meta {
-      font-size: 12px;
-      line-height: 1.4;
-      color: #66736f;
+    .gbm-hot-title {
+      font-size: 19px;
+      line-height: 1.16;
+      font-weight: 900;
+      color: var(--gbm-ink);
       margin-bottom: 8px;
     }
 
-    .gbm-button {
-      width: 100%;
-      border-radius: 999px;
-      border: 1px solid #0087a7;
-      background: white;
-      color: #0087a7;
-      font-size: 12px;
-      font-weight: 900;
-      padding: 8px 10px;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      justify-content: center;
-      align-items: center;
-      box-sizing: border-box;
+    .gbm-hot-caption {
+      color: var(--gbm-muted);
+      font-size: 13px;
+      line-height: 1.45;
     }
 
-    .gbm-inputbar {
-      background: white;
-      border-top: 1px solid #dce5e2;
-      padding: 16px;
+    .gbm-hot-links {
       display: flex;
-      gap: 10px;
-      flex: 0 0 auto;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .gbm-hot-link {
+      color: var(--gbm-blue-dark);
+      font-size: 12px;
+      font-weight: 800;
+      text-decoration: none;
+      background: rgba(18,143,219,.10);
+      border: 1px solid rgba(18,143,219,.20);
+      border-radius: 999px;
+      padding: 7px 9px;
+    }
+
+    .gbm-hot-link-primary {
+      color: white;
+      background: var(--gbm-blue);
+      border-color: var(--gbm-blue);
+    }
+
+    .gbm-hot-image-wrap {
+      position: relative;
+      background: #ffffff;
+      border: 1px solid var(--gbm-line);
+      border-radius: 16px;
+      overflow: hidden;
+      min-height: 145px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .gbm-hot-image {
+      width: 100%;
+      max-height: 210px;
+      object-fit: contain;
+      display: block;
+      background: #ffffff;
+    }
+
+    .gbm-expand-image {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      background: rgba(6,75,118,.86);
+      color: #ffffff;
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 6px 8px;
+      border-radius: 999px;
+    }
+
+    .gbm-section-title {
+      margin: 12px 0 0 52px;
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      color: var(--gbm-ink);
+    }
+
+    .gbm-grid {
+      margin-left: 52px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .gbm-col {
+      background: #ffffff;
+      border: 1px solid var(--gbm-line);
+      border-radius: 18px;
+      padding: 10px;
+      min-height: 215px;
+      box-shadow: 0 8px 24px rgba(16,71,113,.06);
+    }
+
+    .gbm-col-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+      font-weight: 900;
+      color: var(--gbm-ink);
+      font-size: 13px;
+    }
+
+    .gbm-card {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      border: 1px solid rgba(22,50,68,.10);
+      border-radius: 14px;
+      overflow: hidden;
+      background: #fbfdff;
+      margin-bottom: 9px;
+      transition: transform .15s ease, box-shadow .15s ease;
+    }
+
+    .gbm-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 24px rgba(18,143,219,.14);
+    }
+
+    .gbm-card img {
+      width: 100%;
+      height: 86px;
+      object-fit: cover;
+      display: block;
+      background: #e8f3fb;
+    }
+
+    .gbm-card-body { padding: 9px; }
+
+    .gbm-card-title {
+      font-size: 12px;
+      line-height: 1.28;
+      font-weight: 800;
+      color: var(--gbm-ink);
+      margin-bottom: 5px;
+    }
+
+    .gbm-card-meta {
+      font-size: 10.5px;
+      line-height: 1.25;
+      color: var(--gbm-muted);
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      font-weight: 700;
+    }
+
+    .gbm-empty {
+      color: var(--gbm-muted);
+      background: var(--gbm-soft);
+      border: 1px dashed rgba(18,143,219,.24);
+      border-radius: 14px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .gbm-form {
+      display: flex;
+      gap: 9px;
+      border-top: 1px solid var(--gbm-line);
+      padding: 12px;
+      background: #ffffff;
     }
 
     .gbm-input {
       flex: 1;
+      border: 1px solid rgba(22,50,68,.18);
       border-radius: 999px;
-      border: 1px solid #d4ddda;
-      padding: 14px 16px;
-      font-size: 15px;
+      padding: 12px 14px;
+      font-size: 14px;
       outline: none;
     }
 
-    .gbm-send {
-      width: auto;
-      min-width: 86px;
-      height: 48px;
-      border-radius: 999px;
+    .gbm-input:focus {
+      border-color: var(--gbm-blue);
+      box-shadow: 0 0 0 3px rgba(18,143,219,.14);
+    }
+
+    .gbm-submit {
       border: 0;
-      background: #0087a7;
+      border-radius: 999px;
+      background: var(--gbm-blue);
       color: white;
-      cursor: pointer;
       font-weight: 900;
-      letter-spacing: .04em;
+      padding: 0 18px;
+      cursor: pointer;
+    }
+
+    .gbm-submit:disabled {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+
+    .gbm-loading {
       display: flex;
       align-items: center;
-      justify-content: center;
-      padding: 0 18px;
+      gap: 8px;
+      color: var(--gbm-muted);
+      font-size: 13px;
+      margin-left: 52px;
+      padding: 10px 0;
     }
 
-    .gbm-player {
-      width: 100%;
-      aspect-ratio: 16/9;
-      border: 0;
-      border-radius: 10px;
-      overflow: hidden;
-      margin-bottom: 10px;
-      background: #111;
+    .gbm-dot {
+      width: 7px;
+      height: 7px;
+      background: var(--gbm-blue);
+      border-radius: 50%;
+      animation: gbmDot 1s infinite ease-in-out;
     }
 
-    .gbm-empty-card {
-      color: #66736f;
-      font-size: 12px;
-      line-height: 1.45;
-      background: #f8fbfa;
-      border-radius: 12px;
-      padding: 12px;
-      border: 1px dashed #dce5e2;
+    .gbm-dot:nth-child(2) { animation-delay: .15s; }
+    .gbm-dot:nth-child(3) { animation-delay: .3s; }
+
+    @keyframes gbmDot {
+      0%, 80%, 100% { transform: scale(.7); opacity: .45; }
+      40% { transform: scale(1); opacity: 1; }
     }
 
-    @media (max-width: 1100px) {
-      .gbm-grid {
-        grid-template-columns: repeat(2,minmax(0,1fr));
-      }
-    }
-
-    @media (max-width: 800px) {
-      .gbm-panel {
-        inset: 0;
-        width: auto;
-        border-radius: 0;
+    @media (max-width: 940px) {
+      #gbm-deepthink-panel {
+        right: 12px;
+        bottom: 94px;
+        width: calc(100vw - 24px);
+        height: calc(100vh - 112px);
       }
 
       .gbm-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
       .gbm-hot-take-inner {
         grid-template-columns: 1fr;
       }
-
-      .gbm-grid,
-      .gbm-hot-take,
-      .gbm-section-title,
-      .gbm-toggle {
-        margin-left: 0;
-      }
-
-      .gbm-user {
-        max-width: 92%;
-      }
     }
-  </style>
 
-  <div class="gbm-launcher">
-    <span class="gbm-launcher-logo">
-      <img src="${esc(COGNITION_LOGO_URL)}" alt="">
-    </span>
+    @media (max-width: 560px) {
+      #gbm-deepthink-launcher {
+        width: 64px;
+        height: 64px;
+        right: 16px;
+        bottom: 16px;
+      }
 
-    <span style="line-height:1.05;">
-      COGNITION<br>
-      <span style="font-weight:700;">DeepDive</span>
-    </span>
-  </div>
+      #gbm-deepthink-panel {
+        right: 0;
+        bottom: 0;
+        width: 100vw;
+        height: 100vh;
+        border-radius: 0;
+      }
 
-  <div class="gbm-panel">
-    <div class="gbm-header">
-      <div class="gbm-header-left">
-        <div class="gbm-mark">
-          <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
+      .gbm-subtitle { display: none; }
+      .gbm-body { padding: 12px; }
+      .gbm-question { max-width: 92%; }
+      .gbm-grid, .gbm-hot-take, .gbm-section-title, .gbm-toggle { margin-left: 0; }
+      .gbm-grid { grid-template-columns: 1fr; }
+      .gbm-form { padding: 10px; }
+      .gbm-submit { padding: 0 14px; }
+    }
+  `;
+  document.head.appendChild(style);
+
+  const launcher = document.createElement("button");
+  launcher.id = "gbm-deepthink-launcher";
+  launcher.setAttribute("aria-label", "Open COGNITION DeepDive");
+  launcher.innerHTML = `<img src="${COGNITION_LOGO_URL}" alt="COGNITION">`;
+
+  const panel = document.createElement("div");
+  panel.id = "gbm-deepthink-panel";
+  panel.innerHTML = `
+    <div class="gbm-head">
+      <div class="gbm-brand">
+        <img src="${COGNITION_LOGO_URL}" alt="COGNITION">
+        <div>
+          <div class="gbm-title">COGNITION DeepDive</div>
+          <div class="gbm-subtitle">Make your query, and tap the power of our exclusive COGNITION SmartData, combining new research with 25 years of expertise in sustainable building.</div>
         </div>
-        <div class="gbm-title">COGNITION DeepDive</div>
       </div>
-
-      <button class="gbm-close" aria-label="Close chatbot">
-        ${icon("close")}
-      </button>
+      <button class="gbm-close" aria-label="Close">×</button>
     </div>
-
-    <div class="gbm-messages">
+    <div class="gbm-body">
       <div class="gbm-welcome">
-        Make your query, and tap the power of our exclusive COGNITION SmartData,
-        combining new research with 25 years of expertise in sustainable building.
+        <div class="gbm-welcome-title">Ask us anything about sustainable building.</div>
+        <div class="gbm-welcome-text">COGNITION DeepDive searches Green Builder Media articles, guides, magazines, videos, podcasts, and SmartData insights to produce an evidence-based answer with supporting resources.</div>
       </div>
+      <div class="gbm-messages"></div>
     </div>
-
-    <div class="gbm-inputbar">
-      <input class="gbm-input" placeholder="Ask us anything..." />
-      <button class="gbm-send">SEND</button>
-    </div>
-  </div>
+    <form class="gbm-form">
+      <input class="gbm-input" type="text" placeholder="Ask about heat pumps, electrification, resilience, codes, solar, water, materials..." />
+      <button class="gbm-submit" type="submit">Ask</button>
+    </form>
   `;
 
-  const launcher = root.querySelector(".gbm-launcher");
-  const panel = root.querySelector(".gbm-panel");
-  const closeBtn = root.querySelector(".gbm-close");
-  const messages = root.querySelector(".gbm-messages");
-  const input = root.querySelector(".gbm-input");
-  const sendBtn = root.querySelector(".gbm-send");
+  document.body.appendChild(launcher);
+  document.body.appendChild(panel);
 
-  launcher.onclick = () => {
-    launcher.style.display = "none";
-    panel.style.display = "flex";
-    input.focus();
-  };
+  const closeBtn = panel.querySelector(".gbm-close");
+  const form = panel.querySelector(".gbm-form");
+  const input = panel.querySelector(".gbm-input");
+  const submit = panel.querySelector(".gbm-submit");
+  const messages = panel.querySelector(".gbm-messages");
+  const welcome = panel.querySelector(".gbm-welcome");
 
-  closeBtn.onclick = () => {
-    panel.style.display = "none";
-    launcher.style.display = "flex";
-  };
+  launcher.addEventListener("click", () => {
+    panel.classList.toggle("gbm-open");
+    if (panel.classList.contains("gbm-open")) input.focus();
+  });
 
-  function renderQuestion(q) {
-    return `<div class="gbm-user">${esc(q)}</div>`;
+  closeBtn.addEventListener("click", () => {
+    panel.classList.remove("gbm-open");
+  });
+
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
-  function youtubeId(url) {
+  function abs(url) {
     if (!url) return "";
-    const watch = String(url).match(/[?&]v=([^&]+)/);
-    if (watch) return watch[1];
-    const short = String(url).match(/youtu\.be\/([^?&]+)/);
-    if (short) return short[1];
-    const embed = String(url).match(/embed\/([^?&/]+)/);
-    if (embed) return embed[1];
-    return "";
+    const raw = String(url);
+    if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+    if (raw.startsWith("/")) return API_BASE.replace(/\/$/, "") + raw;
+    return raw;
   }
 
-  function isPdfCard(card) {
-    const t = String(card.type || card.source_type || card.attribution_label || card.source || "").toLowerCase();
-    const u = String(card.url || "").toLowerCase();
-    const title = String(card.title || "").toLowerCase();
-
-    return (
-      t === "pdf" ||
-      t === "magazine" ||
-      t.includes("magazine") ||
-      t.includes("pdf") ||
-      u.includes(".pdf") ||
-      u.includes("/magazines/") ||
-      title.includes("(pdf") ||
-      title.includes("magazine")
-    );
-  }
-
-  function isVideoCard(card) {
-    const t = String(card.type || card.source_type || "").toLowerCase();
-    const u = String(card.url || "").toLowerCase();
-    return (
-      t === "video" ||
-      t === "youtube" ||
-      u.includes("youtube.com/watch") ||
-      u.includes("youtu.be/")
-    );
-  }
-
-  function isPodcastCard(card) {
-    const t = String(card.type || card.source_type || "").toLowerCase();
-    const u = String(card.url || "").toLowerCase();
-    const title = String(card.title || "").toLowerCase();
-    return (
-      t === "podcast" ||
-      u.includes("playlist?list=plwqacwozaqyfamz7xa2mz2acdlvaukflv") ||
-      title.includes("podcast")
-    );
+  function normalizeUrl(url) {
+    return String(url || "").trim();
   }
 
   function dedupeByUrl(items) {
     const seen = new Set();
     const out = [];
-
     (items || []).forEach(item => {
-      const key = String(item.url || item.title || "").trim();
-      if (!key || seen.has(key)) return;
-      seen.add(key);
+      const url = normalizeUrl(item && item.url);
+      if (!url) return;
+      if (seen.has(url)) return;
+      seen.add(url);
       out.push(item);
     });
-
     return out;
   }
 
-  function renderColumn(title, type, items, emptyText) {
-    const visible = dedupeByUrl(items || []).slice(0, 1);
+  function imageForCard(card, type) {
+    const explicit = card.image || card.thumbnail_url || card.thumbnail || card.cover || card.og_image || card.featured_image;
+    if (explicit) return abs(explicit);
 
+    if (type === "pdf") return abs("/assets/covers/fallback-magazine.jpg");
+    if (type === "video" || type === "podcast") return COGNITION_LOGO_URL;
+    return abs("/assets/thumbs/fallback-article.jpg");
+  }
+
+  function cardTitle(card) {
+    return card.title || card.name || card.source_name || "Green Builder Media Resource";
+  }
+
+  function cardMeta(card, type) {
+    if (type === "pdf") {
+      const page = card.page != null ? ` · p. ${card.page}` : "";
+      return `${card.source || card.issue || "Magazine / Guide"}${page}`;
+    }
+    if (type === "video") return card.source || "Green Builder Media YouTube";
+    if (type === "podcast") return card.source || "Green Builder Media Podcast";
+    return card.category || card.source || card.attribution_label || "Article";
+  }
+
+  function renderCard(card, type) {
+    const url = abs(card.url || card.article_url || "");
+    if (!url) return "";
+    const title = cardTitle(card);
+    const img = imageForCard(card, type);
     return `
-      <div class="gbm-column">
-        <div class="gbm-column-header">
-          <div class="gbm-icon">${icon(type)}</div>
-          ${esc(title)}
-          <div class="gbm-count">${visible.length}</div>
+      <a class="gbm-card" href="${esc(url)}" target="_blank" rel="noopener">
+        <img src="${esc(img)}" alt="${esc(title)}" loading="lazy" onerror="this.onerror=null;this.src='${esc(type === "pdf" ? abs("/assets/covers/fallback-magazine.jpg") : COGNITION_LOGO_URL)}';" />
+        <div class="gbm-card-body">
+          <div class="gbm-card-title">${esc(title)}</div>
+          <div class="gbm-card-meta">${esc(cardMeta(card, type))}</div>
         </div>
-
-        ${visible.length ? visible.map(item => renderCard(type, item)).join("") : `
-          <div class="gbm-empty-card">
-            ${esc(emptyText || "No related content found yet.")}
-          </div>
-        `}
-      </div>
+      </a>
     `;
   }
 
-  function pdfCoverFromUrl(url) {
-    if (!url) return "/assets/covers/fallback-magazine.jpg";
-
-    const raw = String(url)
-      .split("/magazines/")
-      .pop()
-      .split("?")[0]
-      .split("#")[0]
-      .replace(/\.pdf$/i, "");
-
-    const decoded = decodeURIComponent(raw);
-
-    const hyphenName = decoded
-      .replace(/[^A-Za-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") + ".jpg";
-
-    return "/assets/covers/" + hyphenName;
-  }
-
-  function renderCard(type, item) {
-    const isVideo = type === "video" || type === "podcast";
-    const yid = isVideo ? youtubeId(item.url || item.source_url || "") : "";
-
-    const fallback =
-      type === "pdf"
-        ? "/assets/covers/fallback-magazine.jpg"
-        : "/assets/thumbs/fallback-article.jpg";
-
-    const url = item.url || item.source_url || "#";
-
-    const img =
-      type === "pdf"
-        ? pdfCoverFromUrl(url)
-        : (
-            item.image ||
-            item.thumbnail ||
-            item.thumbnail_url ||
-            item.cover ||
-            item.remote_image ||
-            (yid
-              ? "https://img.youtube.com/vi/" + yid + "/hqdefault.jpg"
-              : fallback)
-          );
-
-    const source =
-      item.source ||
-      item.issue ||
-      item.category ||
-      item.attribution_label ||
-      (type === "podcast"
-        ? "Green Builder Media Network"
-        : type === "video"
-        ? "Green Builder Media YouTube"
-        : "Green Builder Media");
-
+  function renderColumn(title, type, items, emptyText) {
+    const clean = dedupeByUrl(items || []).slice(0, 2);
     return `
-      <div class="gbm-card">
-        ${
-          isVideo && yid
-            ? `
-              <iframe
-                class="gbm-player"
-                src="https://www.youtube.com/embed/${esc(yid)}"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowfullscreen
-              ></iframe>
-            `
-            : `
-              <img
-                class="gbm-thumb"
-                src="${abs(img)}"
-                onerror="this.onerror=null;this.src='${abs(fallback)}';"
-              />
-            `
-        }
-
-        <div class="gbm-card-title">${esc(item.title || "Untitled")}</div>
-
-        <div class="gbm-card-meta">
-          ${esc(source)}${item.page ? " · p. " + esc(item.page) : ""}
-        </div>
-
-        <a class="gbm-button" href="${abs(url)}" target="_blank" rel="noopener">
-          ${
-            type === "video"
-              ? "Watch on YouTube ↗"
-              : type === "podcast"
-              ? "Listen / Watch ↗"
-              : type === "pdf"
-              ? "View PDF ↗"
-              : "Read Article ↗"
-          }
-        </a>
+      <div class="gbm-col">
+        <div class="gbm-col-head">${esc(title)}</div>
+        ${clean.length ? clean.map(item => renderCard(item, type)).join("") : `<div class="gbm-empty">${esc(emptyText)}</div>`}
       </div>
     `;
   }
 
   function twoParagraphAnswer(text) {
     const raw = String(text || "").trim();
-    if (!raw) return "";
+    if (!raw) return "I couldn't find enough Green Builder Media context to answer that question.";
 
-    const paragraphs = raw
-      .split(/\n\s*\n/)
-      .map(p => p.trim())
-      .filter(Boolean);
+    const paragraphs = raw.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length >= 2) return paragraphs.slice(0, 2).join("\n\n");
 
-    if (paragraphs.length >= 2) {
-      return paragraphs.slice(0, 2).join("\n\n");
+    const sentences = raw.match(/[^.!?]+[.!?]+(?:\s|$)/g) || [];
+    if (sentences.length >= 3) {
+      return sentences.slice(0, 3).join(" ").trim();
     }
 
-    return raw;
+    return raw.length > 850 ? raw.slice(0, 850).replace(/\s+\S*$/, "") + "..." : raw;
   }
 
-  function firstUsableArticle(cards) {
-    return (cards || []).find(card => card && card.url && card.title) || null;
+  function isPdfCard(card) {
+    const type = String(card.type || card.source_type || "").toLowerCase();
+    const url = String(card.url || "").toLowerCase();
+    return type === "pdf" || type === "magazine" || url.includes("/magazines/") || url.endsWith(".pdf") || url.includes(".pdf");
+  }
+
+  function isVideoCard(card) {
+    const type = String(card.type || card.source_type || "").toLowerCase();
+    const url = String(card.url || "").toLowerCase();
+    return type === "video" || url.includes("youtube.com/watch") || url.includes("youtu.be/");
+  }
+
+  function isPodcastCard(card) {
+    const type = String(card.type || card.source_type || "").toLowerCase();
+    return type === "podcast";
+  }
+
+  function firstUsableArticle(articles) {
+    return (articles || []).find(a => a && a.url);
+  }
+
+  function renderQuestion(question) {
+    return `<div class="gbm-question">${esc(question)}</div>`;
+  }
+
+  function renderLoading(question) {
+    welcome.style.display = "none";
+    messages.innerHTML = `
+      ${renderQuestion(question)}
+      <div class="gbm-loading">
+        <span class="gbm-dot"></span><span class="gbm-dot"></span><span class="gbm-dot"></span>
+        <span>Searching Green Builder Media knowledge sources...</span>
+      </div>
+    `;
   }
 
   function renderHotTake(payload, articles) {
     const hot = payload.hot_take || payload.hotTake || payload.cognition_hot_take || {};
-    const articleFallback = firstUsableArticle(articles);
-
-    const title =
-      hot.title ||
-      hot.article_title ||
-      hot.articleTitle ||
-      "COGNITION SmartData";
-
-    const articleUrl =
-      hot.article_url ||
-      hot.articleUrl ||
-      hot.url ||
-      (articleFallback ? articleFallback.url : COGNITION_SMART_DATA_URL);
 
     const chartImage =
       hot.chart_image ||
@@ -846,12 +727,50 @@
       hot.image_url ||
       hot.thumbnail ||
       hot.thumbnail_url ||
-      COGNITION_FALLBACK_CHART_URL;
+      "";
+
+    const title =
+      hot.title ||
+      hot.article_title ||
+      hot.articleTitle ||
+      "";
 
     const caption =
       hot.caption ||
       hot.summary ||
-      "COGNITION SmartData highlights the market signals, consumer behavior, and building-science trends behind this topic. As the Hot Take chart library is connected to the backend, this area will automatically display the most relevant data graphic for each query.";
+      "";
+
+    const imageBlob = String(chartImage || "").toLowerCase();
+    const titleBlob = String(title || "").toLowerCase();
+    const captionBlob = String(caption || "").toLowerCase();
+
+    const isPlaceholder =
+      !chartImage ||
+      imageBlob.includes("fallback") ||
+      imageBlob.includes("placeholder") ||
+      imageBlob.includes("cognition%20button") ||
+      imageBlob.includes("cognition button") ||
+      imageBlob.includes("logo");
+
+    const isDefaultCopy =
+      titleBlob === "cognition smartdata" ||
+      captionBlob.includes("as the hot take chart library is connected to the backend") ||
+      captionBlob.includes("this area will automatically display");
+
+    const weakTitle = title.trim().length < 8;
+    const weakCaption = caption.trim().length < 60;
+
+    if (isPlaceholder || isDefaultCopy || (weakTitle && weakCaption)) {
+      return "";
+    }
+
+    const articleFallback = firstUsableArticle(articles);
+
+    const articleUrl =
+      hot.article_url ||
+      hot.articleUrl ||
+      hot.url ||
+      (articleFallback ? articleFallback.url : COGNITION_SMART_DATA_URL);
 
     return `
       <div class="gbm-hot-take">
@@ -876,7 +795,6 @@
               <img
                 class="gbm-hot-image"
                 src="${abs(chartImage)}"
-                onerror="this.onerror=null;this.src='${abs(COGNITION_FALLBACK_CHART_URL)}';"
                 alt="COGNITION data graphic"
               />
             </a>
@@ -939,6 +857,8 @@
         .concat(podcastCardsFromCards)
         .concat(podcastCardsFromSources);
 
+    const hotTakeHtml = renderHotTake(payload, articles);
+
     messages.innerHTML = `
       ${renderQuestion(question)}
 
@@ -954,7 +874,7 @@
 
       <div class="gbm-toggle">DIVE DEEPER WITH TEXT ONLY</div>
 
-      ${renderHotTake(payload, articles)}
+      ${hotTakeHtml && hotTakeHtml.trim() ? hotTakeHtml : ""}
 
       <div class="gbm-section-title">
   SUPPORTING RESOURCES
@@ -984,13 +904,12 @@
         <div class="gbm-avatar">
           <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
         </div>
-
         <div class="gbm-answer">
           ${esc(payload.text_only_answer || payload.answer || "").replace(/\n/g,"<br>")}
         </div>
       </div>
 
-      <div class="gbm-toggle">RETURN TO VISUAL MODE</div>
+      <div class="gbm-toggle">RETURN TO VISUAL DEEPDIVE</div>
     `;
 
     const toggle = messages.querySelector(".gbm-toggle");
@@ -999,64 +918,70 @@
     }
   }
 
-  async function askQuestion() {
-    const question = input.value.trim();
-    if (!question) return;
-
-    messages.innerHTML = `
-      ${renderQuestion(question)}
-
-      <div class="gbm-answer-wrap">
-        <div class="gbm-avatar">
-          <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
-        </div>
-
-        <div class="gbm-answer">Thinking...</div>
-      </div>
-    `;
-
-    input.value = "";
+  async function ask(question) {
+    lastQuestion = question;
+    submit.disabled = true;
+    renderLoading(question);
 
     try {
-      const response = await fetch(API_BASE + "/chat", {
+      const res = await fetch(API_BASE.replace(/\/$/, "") + "/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
-          session_id: "web-" + Date.now(),
+          session_id: sessionId,
           page_url: window.location.href,
-          referrer: document.referrer || "",
-          user_agent: navigator.userAgent || ""
+          referrer: document.referrer,
+          user_agent: navigator.userAgent
         })
       });
 
-      const payload = await response.json();
-      renderVisual(payload, question);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
 
+      const payload = await res.json();
+      lastPayload = payload;
+      renderVisual(payload, question);
     } catch (err) {
       messages.innerHTML = `
         ${renderQuestion(question)}
-
         <div class="gbm-answer-wrap">
-          <div class="gbm-avatar">
-            <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
-          </div>
-
-          <div class="gbm-answer">
-            Sorry — the chatbot encountered an error.
-          </div>
+          <div class="gbm-avatar"><img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION"></div>
+          <div class="gbm-answer">I’m sorry, the COGNITION DeepDive service could not complete that request. ${esc(err.message || "")}</div>
         </div>
       `;
+    } finally {
+      submit.disabled = false;
     }
   }
 
-  sendBtn.onclick = askQuestion;
-
-  input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      askQuestion();
-    }
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question) return;
+    input.value = "";
+    ask(question);
   });
 
+  window.GBMDeepThink = {
+    open() {
+      panel.classList.add("gbm-open");
+      input.focus();
+    },
+    close() {
+      panel.classList.remove("gbm-open");
+    },
+    ask(question) {
+      panel.classList.add("gbm-open");
+      ask(question);
+    },
+    rerender() {
+      if (!lastPayload || !lastQuestion) return;
+      if (currentMode === "text") renderText(lastPayload, lastQuestion);
+      else renderVisual(lastPayload, lastQuestion);
+    }
+  };
 })();
+```
