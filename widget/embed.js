@@ -532,7 +532,12 @@
         grid-template-columns: repeat(2,minmax(0,1fr));
       }
     }
-
+.gbm-hot-take:has(img[src*="Cognition%20Button"]),
+.gbm-hot-take:has(img[src*="cognition"]),
+.gbm-hot-take:has(img[src*="placeholder"]),
+.gbm-hot-take:has(img[src*="fallback"]) {
+  display: none !important;
+}
     @media (max-width: 800px) {
       .gbm-panel {
         inset: 0;
