@@ -105,9 +105,9 @@ MONTH_PATTERN = (
 
 DATE_PATTERNS = [
     rf"\b({MONTH_PATTERN})\s+\d{{1,2}},\s+\d{{4}}\b",
-    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{{1,2}},\s+\d{{4}}\b",
+    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]\s*\d{{1,2}},\s+\d{{4}}\b",
     rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\b",
-    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{{1,2}}\b",
+    rf"\b({MONTH_PATTERN})\s+\d{{1,2}}\s*[-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]\s*\d{{1,2}}\b",
     r"\b\d{4}-\d{2}-\d{2}\b",
     r"\b\d{1,2}/\d{1,2}/\d{4}\b",
 ]
@@ -296,12 +296,12 @@ def parse_single_event_date(raw: str, default_year: int | None = None) -> date |
         return None
     raw = raw.strip()
     raw = re.sub(
-        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{1,2},\s+(\d{4})",
+        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]\s*\d{1,2},\s+(\d{4})",
         r"\1 \2, \3",
         raw,
     )
     raw = re.sub(
-        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â]\s*\d{1,2}",
+        r"(\b[A-Za-z]+)\s+(\d{1,2})\s*[-ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â]\s*\d{1,2}",
         r"\1 \2",
         raw,
     )
@@ -1558,11 +1558,20 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
                 enriched["transcript_file"] = transcript.get("filename", "")
                 enriched["transcript_excerpt"] = transcript_preview[:240]
                 enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
+
+                transcript_endpoint = ""
                 if video.get("video_id"):
-                    enriched["transcript_url"] = f"/api/youtube-transcript/{video.get('video_id')}"
-                    enriched["transcriptUrl"] = enriched["transcript_url"]
+                    transcript_endpoint = f"/api/youtube-transcript/{video.get('video_id')}"
+
+                enriched["transcript_url"] = transcript_endpoint
+                enriched["transcriptUrl"] = transcript_endpoint
+                enriched["drive_transcript_url"] = transcript_endpoint
+                enriched["google_drive_transcript"] = transcript_endpoint
+
             else:
                 enriched["has_transcript"] = False
+                enriched["transcript_url"] = ""
+                enriched["transcriptUrl"] = 
             scored.append((score, enriched))
 
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -2030,8 +2039,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         if not chunks:
             response = ChatResponse(
                 answer=(
-                    "IÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢m not seeing any confirmed future conferences in the current Green Builder Media excerpts. "
-                    "The available event-related content appears to be past or undated, so I canÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢t verify an upcoming conference from the retrieved material."
+                    "I'm not seeing any confirmed future conferences in the current Green Builder Media excerpts. "
+                    "The available event-related content appears to be past or undated, so I can't verify an upcoming conference from the retrieved material."
                 ),
                 sources=[],
             )
@@ -2886,7 +2895,7 @@ def run_pdf_inbox_ingest(pause_seconds: int = PDF_INGEST_DEFAULT_PAUSE_SECONDS) 
                         write_magazine_ingest_status({
                             **base_status,
                             "status": "running",
-                            "message": f"Ingesting {filename} ({index}/{total}) Ã¢â‚¬â€ {int(time.time() - started_at)} seconds elapsed",
+                            "message": f"Ingesting {filename} ({index}/{total}) â€” {int(time.time() - started_at)} seconds elapsed",
                             "paused": False,
                             "skip_requested": False,
                         })
