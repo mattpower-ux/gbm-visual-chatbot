@@ -30,6 +30,7 @@ TABLE_NAME = "greenbuilder_chunks"
 YOUTUBE_CACHE_FILE = Path("/data/youtube_videos.json")
 PODCAST_CACHE_FILE = Path("/data/podcast_videos.json")
 TRANSCRIPT_STATUS_FILE = Path("/data/youtube_transcript_ingest_status.json")
+TRANSCRIPT_CACHE_FILE = Path("/data/youtube_transcripts.json")
 CAPTION_DIR = Path("/data/youtube_captions")
 AUDIO_DIR = Path("/data/youtube_audio")
 
@@ -54,6 +55,169 @@ def load_json_list(path: Path) -> list[dict[str, Any]]:
     except Exception as exc:
         print(f"Could not read {path}: {exc}")
         return []
+
+
+def load_json_any(path: Path) -> Any:
+    if not path.exists():
+        print(f"Missing cache file: {path}")
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Could not read {path}: {exc}")
+        return None
+
+
+def normalize_video_id(raw: Any) -> str:
+    return str(raw or "").strip()
+
+
+def load_cached_transcript_index(path: Path = TRANSCRIPT_CACHE_FILE) -> dict[str, dict[str, Any]]:
+    """
+    Loads locally scraped transcripts from /data/youtube_transcripts.json.
+
+    This is the important bridge for the browser-assisted transcript scraper.
+    The scraper output observed on Render stores full transcript content in
+    transcript["text"], not transcript["rows"]. This index lets the ingestion
+    pipeline use that already-scraped text before trying YouTube's public API.
+    """
+    data = load_json_any(path)
+    if not data:
+        return {}
+
+    candidates: list[dict[str, Any]] = []
+
+    if isinstance(data, list):
+        candidates = [x for x in data if isinstance(x, dict)]
+    elif isinstance(data, dict):
+        for key in (
+            "transcripts",
+            "items",
+            "videos",
+            "results",
+            "data",
+        ):
+            value = data.get(key)
+            if isinstance(value, list):
+                candidates.extend(x for x in value if isinstance(x, dict))
+
+        # Some status/cache files also contain lookup maps.
+        for key in ("by_video_id", "by_title"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                candidates.extend(x for x in value.values() if isinstance(x, dict))
+
+        # If the dict itself looks like one transcript object, include it.
+        if data.get("video_id") or data.get("text") or data.get("rows"):
+            candidates.append(data)
+
+    index: dict[str, dict[str, Any]] = {}
+    for item in candidates:
+        video_id = normalize_video_id(item.get("video_id") or item.get("id"))
+        if not video_id:
+            url = str(item.get("url") or item.get("youtube_url") or "")
+            match = re.search(r"(?:v=|youtu\.be/|embed/)([A-Za-z0-9_-]{6,})", url)
+            if match:
+                video_id = match.group(1)
+
+        if video_id and item.get("text"):
+            index[video_id] = item
+
+    print(f"Loaded {len(index)} cached scraped transcripts from {path}.")
+    return index
+
+
+def timestamp_label(seconds: float | int) -> str:
+    seconds_int = max(int(seconds or 0), 0)
+    h = seconds_int // 3600
+    m = (seconds_int % 3600) // 60
+    s = seconds_int % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def rows_from_plain_transcript_text(text: str) -> list[dict[str, Any]]:
+    """
+    Converts a full scraped transcript string into timestamp-ish rows.
+
+    Supports transcript text with explicit timestamps like 00:31, 1:02:15,
+    or plain text with no timestamps. If no timestamps are found, it still
+    returns one row so transcript_to_blocks can chunk it for semantic search.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    timestamp_re = re.compile(r"(?P<ts>\b\d{1,2}:\d{2}(?::\d{2})?\b)")
+
+    rows: list[dict[str, Any]] = []
+    current_start: float | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_start, current_lines
+        row_text = clean_text(" ".join(current_lines))
+        if row_text:
+            rows.append(
+                {
+                    "text": row_text,
+                    "start": float(current_start or 0.0),
+                    "duration": 1.0,
+                }
+            )
+        current_start = None
+        current_lines = []
+
+    for line in lines:
+        match = timestamp_re.search(line)
+        if match:
+            if current_lines:
+                flush()
+            current_start = seconds_from_timestamp(match.group("ts"))
+            line = timestamp_re.sub(" ", line, count=1).strip(" -–—\t")
+        elif current_start is None:
+            current_start = 0.0
+
+        if line:
+            current_lines.append(line)
+
+    if current_lines:
+        flush()
+
+    if rows:
+        # Estimate durations from the next row start when possible.
+        for i, row in enumerate(rows):
+            if i + 1 < len(rows):
+                row["duration"] = max(float(rows[i + 1]["start"]) - float(row["start"]), 0.1)
+        return rows
+
+    return [{"text": clean_text(cleaned), "start": 0.0, "duration": 1.0}]
+
+
+def cached_transcript_to_rows(transcript_obj: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = transcript_obj.get("rows")
+    if isinstance(rows, list):
+        normalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            text = clean_text(str(row.get("text") or ""))
+            if not text:
+                continue
+            normalized_rows.append(
+                {
+                    "text": text,
+                    "start": float(row.get("start") or row.get("start_seconds") or 0.0),
+                    "duration": float(row.get("duration") or 1.0),
+                }
+            )
+        if normalized_rows:
+            return normalized_rows
+
+    # This is the known current scraper format: one transcript object with "text".
+    return rows_from_plain_transcript_text(str(transcript_obj.get("text") or ""))
 
 
 def clean_text(text: str) -> str:
@@ -305,13 +469,29 @@ def transcribe_audio_with_openai(video_id: str) -> list[dict[str, Any]]:
 
 def get_best_transcript(
     video_id: str,
-    whisper_budget: dict[str, int]
+    whisper_budget: dict[str, int],
+    cached_transcripts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
 
-    rows = fetch_transcript_api(video_id)
+    cached = (cached_transcripts or {}).get(video_id)
+    if cached:
+        rows = cached_transcript_to_rows(cached)
+        if rows:
+            return rows, "cached_youtube_transcripts_json"
 
+    rows = fetch_transcript_api(video_id)
     if rows:
         return rows, "youtube_transcript_api"
+
+    rows = fetch_transcript_ytdlp_captions(video_id)
+    if rows:
+        return rows, "yt_dlp_captions"
+
+    if ENABLE_WHISPER_FALLBACK and whisper_budget.get("used", 0) < MAX_WHISPER_VIDEOS_PER_RUN:
+        whisper_budget["used"] = whisper_budget.get("used", 0) + 1
+        rows = transcribe_audio_with_openai(video_id)
+        if rows:
+            return rows, "openai_whisper_fallback"
 
     return [], "none"
 
@@ -393,12 +573,13 @@ def make_rows_for_video(
     source_type: str,
     existing_ids: set[str],
     whisper_budget: dict[str, int],
+    cached_transcripts: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     video_id = video.get("video_id") or ""
     if not video_id:
         return [], "missing_video_id"
 
-    transcript, method = get_best_transcript(video_id, whisper_budget)
+    transcript, method = get_best_transcript(video_id, whisper_budget, cached_transcripts)
     if not transcript:
         return [], method
 
@@ -425,7 +606,7 @@ def make_rows_for_video(
         full_text = clean_text(
             f"{title}\n\n"
             f"{description[:800]}\n\n"
-            f"Transcript excerpt starting at {start} seconds:\n{block['text']}"
+            f"Transcript excerpt starting at {timestamp_label(start)} ({start} seconds):\n{block['text']}"
         )
 
         rows.append(
@@ -529,6 +710,7 @@ def main() -> None:
     print(f"Loaded {len(videos)} videos and {len(podcasts)} podcasts.")
 
     existing_ids = existing_transcript_ids()
+    cached_transcripts = load_cached_transcript_index()
     whisper_budget = {"used": 0}
 
     all_rows: list[dict[str, Any]] = []
@@ -556,7 +738,13 @@ def main() -> None:
         print(f"[{index}/{len(media_items)}] Processing: {title}")
 
         try:
-            rows, method = make_rows_for_video(item, source_type, existing_ids, whisper_budget)
+            rows, method = make_rows_for_video(
+                item,
+                source_type,
+                existing_ids,
+                whisper_budget,
+                cached_transcripts,
+            )
 
             if not rows:
                 skipped.append(
@@ -564,7 +752,7 @@ def main() -> None:
                         "title": title,
                         "video_id": video_id,
                         "source_type": source_type,
-                        "reason": "No transcript rows",
+                        "reason": "No transcript text or rows",
                         "method": method,
                     }
                 )
@@ -602,6 +790,7 @@ def main() -> None:
         "ok": True,
         "videos_loaded": len(videos),
         "podcasts_loaded": len(podcasts),
+        "cached_transcripts_loaded": len(cached_transcripts),
         "chunks_prepared": len(all_rows),
         "chunks_added": added,
         "whisper_fallback_enabled": ENABLE_WHISPER_FALLBACK,
