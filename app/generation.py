@@ -68,10 +68,11 @@ Rules:
 - Blend transcript quotes naturally into the prose instead of presenting them as standalone blocks.
 
 - When using a direct quote from a video or podcast transcript, include the transcript timestamp when the source provides one.
-- Use timestamp format like (14:22), not raw seconds.
-- If a timestamped YouTube URL is provided, you may use that context to understand where the quote appears, but do not print raw URLs unless the user asks.
-- Best format:
-  According to building scientist Sam Rashkin, "there's this growing awareness about the significant regulatory burden" (14:22).
+- Use timestamp format like clickable markdown links instead of plain text timestamps when a YouTube URL is available.
+- Preferred format:
+  According to building scientist Sam Rashkin, "there's this growing awareness about the significant regulatory burden" ([14:22](https://www.youtube.com/watch?v=VIDEO_ID&t=862s)).
+- If a timestamped YouTube URL is supplied in the source excerpt, use that exact URL for the markdown link.
+- Do not print raw URLs outside markdown links unless the user explicitly asks for them.
 - Do not attach timestamps to paraphrases unless the answer specifically needs them.
 
 - Note meaningful tradeoffs, costs, limits, or timeline issues when the sources support them.
@@ -223,8 +224,10 @@ Return a concise answer in markdown with:
 5. Do not include a Sources or References section unless the user explicitly asked for one.
 6. When transcript excerpts contain named speakers and directly address the user's question, include one short direct quote with natural attribution whenever possible.
 7. Never fabricate quotes or speaker wording.
-8. If a transcript quote has a timestamp, include it in parentheses immediately after the quote.
-9. Never refer to excerpts using labels like "Source 1", "Source 2", or "Source 3" in the prose response.
+8. If a transcript quote has both a timestamp and YouTube URL available, format the timestamp as a clickable markdown link to the exact playback moment.
+9. Example:
+   "We didn't have a supply chain" ([20:06](https://www.youtube.com/watch?v=VIDEO_ID&t=1206s)).
+10. Never refer to excerpts using labels like "Source 1", "Source 2", or "Source 3" in the prose response.
 
 Do not fabricate any source, date, event status, or detail.
 """
