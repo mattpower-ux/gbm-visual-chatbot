@@ -1,35 +1,22 @@
 (function () {
 
-  function escapeHtml(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
+  function renderMarkdownInlineLinks(value) {
+    let html = esc(value || "");
 
-  function renderAnswerMarkdown(value) {
-    let html = escapeHtml(value || "");
-
-    // Markdown links: [visible text](https://example.com)
+    // Convert markdown links like [20:06](https://youtube...) into embedded hyperlinks.
     html = html.replace(
       /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
       function (_match, label, url) {
-        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
+        return '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
       }
     );
 
-    // Bold and italic, kept intentionally simple.
+    // Basic markdown cleanup for the bot answer.
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-    // Preserve paragraph breaks and line breaks.
-    html = html.replace(/\n{2,}/g, "</p><p>");
     html = html.replace(/\n/g, "<br>");
 
-    return "<p>" + html + "</p>";
+    return html;
   }
 
   if (window.GBM_DEEPTHINK_LOADED) return;
@@ -300,8 +287,12 @@
 
     .gbm-answer a {
       color: #0087a7;
-      text-decoration: none;
+      text-decoration: underline;
       font-weight: 800;
+    }
+
+    .gbm-answer a:hover {
+      text-decoration-thickness: 2px;
     }
 
 .gbm-toggle {
@@ -1347,7 +1338,7 @@
         </div>
 
         <div class="gbm-answer">
-          ${esc(twoParagraphAnswer(payload.visual_summary || payload.answer || "")).replace(/\n/g,"<br>")}
+          ${renderMarkdownInlineLinks(twoParagraphAnswer(payload.visual_summary || payload.answer || ""))}
         </div>
       </div>
 
@@ -1389,7 +1380,7 @@
         </div>
 
         <div class="gbm-answer">
-          ${esc(payload.text_only_answer || payload.answer || "").replace(/\n/g,"<br>")}
+          ${renderMarkdownInlineLinks(payload.text_only_answer || payload.answer || "")}
         </div>
       </div>
 
