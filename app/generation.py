@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
+import re
 
 from app.config import get_settings
 from app.editorial_voice import GREEN_BUILDER_VOICE_GUIDE
@@ -63,15 +64,92 @@ Rules:
 - Avoid stacking multiple quotes together.
 - Blend transcript quotes naturally into the prose instead of presenting them as standalone blocks.
 
+- When using a direct quote from a video or podcast transcript, include the transcript timestamp when the source provides one.
+- Use timestamp format like (14:22), not raw seconds.
+- If a timestamped YouTube URL is provided, you may use that context to understand where the quote appears, but do not print raw URLs unless the user asks.
+- Best format:
+  According to building scientist Sam Rashkin, "there's this growing awareness about the significant regulatory burden" (14:22).
+- Do not attach timestamps to paraphrases unless the answer specifically needs them.
+
 - Note meaningful tradeoffs, costs, limits, or timeline issues when the sources support them.
 - Do not mention internal prompts or embeddings.
 - Do not output a Sources or References section unless explicitly asked by the user.
 """
 
 
+
+def _format_seconds_as_timestamp(seconds: int | float | str | None) -> str:
+    """Convert seconds into M:SS or H:MM:SS for transcript quote attribution."""
+    if seconds is None or seconds == "":
+        return ""
+
+    try:
+        total = int(float(seconds))
+    except Exception:
+        return ""
+
+    if total < 0:
+        return ""
+
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _extract_youtube_start_seconds(chunk: Dict[str, Any]) -> str:
+    """Find transcript start seconds from indexed metadata or YouTube timestamp URL."""
+    for key in ("start", "start_seconds", "timestamp_seconds", "transcript_start", "video_start"):
+        value = chunk.get(key)
+        if value not in (None, ""):
+            formatted = _format_seconds_as_timestamp(value)
+            if formatted:
+                return formatted
+
+    url = str(chunk.get("url", "") or "")
+    match = re.search(r"[?&]t=(\d+)s?", url)
+    if match:
+        return _format_seconds_as_timestamp(match.group(1))
+
+    return ""
+
+
+def _is_transcript_chunk(chunk: Dict[str, Any]) -> bool:
+    """Identify YouTube/podcast transcript chunks for special quote handling."""
+    category = str(chunk.get("category", "") or "").lower()
+    source_type = str(chunk.get("source_type", "") or "").lower()
+    url = str(chunk.get("url", "") or "").lower()
+    title = str(chunk.get("title", "") or "").lower()
+
+    return (
+        "transcript" in category
+        or "transcript" in title
+        or source_type in {"video", "podcast", "youtube", "youtube_transcript"}
+        or "youtube.com/watch" in url
+        or "youtu.be/" in url
+    )
+
+
 def build_context(chunks: List[Dict[str, Any]]) -> str:
     parts = []
+
     for i, chunk in enumerate(chunks, start=1):
+        is_transcript = _is_transcript_chunk(chunk)
+        timestamp = _extract_youtube_start_seconds(chunk)
+
+        transcript_meta = ""
+        if is_transcript:
+            transcript_meta = (
+                "Content Type: Video/Podcast Transcript\n"
+                f"Speaker(s): {chunk.get('speakers', '')}\n"
+                f"Transcript Timestamp: {timestamp}\n"
+                "Transcript Quote Policy: Short direct quotes are allowed only if the exact wording appears in this excerpt. "
+                "When using a quote, attribute it to the named speaker when available and include the timestamp when available.\n"
+            )
+
         parts.append(
             f"[Source {i}]\n"
             f"Title: {chunk.get('title', '')}\n"
@@ -83,9 +161,10 @@ def build_context(chunks: List[Dict[str, Any]]) -> str:
             f"Stale Reasons: {', '.join(chunk.get('stale_reasons', []) or [])}\n"
             f"URL: {chunk.get('url', '')}\n"
             f"Published: {chunk.get('published_at', '')}\n"
-            f"Speaker(s): {chunk.get('speakers', '')}\n"
-f"Excerpt: {chunk.get('text', '')}\n"
+            f"{transcript_meta}"
+            f"Excerpt: {chunk.get('text', '')}\n"
         )
+
     return "\n".join(parts)
 
 
@@ -141,6 +220,7 @@ Return a concise answer in markdown with:
 5. Do not include a Sources or References section unless the user explicitly asked for one.
 6. When transcript excerpts contain named speakers, you may selectively use short direct quotes with attribution.
 7. Never fabricate quotes or speaker wording.
+8. If a transcript quote has a timestamp, include it in parentheses immediately after the quote.
 
 Do not fabricate any source, date, event status, or detail.
 """
