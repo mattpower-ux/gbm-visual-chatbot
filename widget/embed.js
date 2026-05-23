@@ -403,6 +403,7 @@
       gap: 14px;
       margin-left: 60px;
       margin-bottom: 26px;
+      align-items: start;
     }
 
     .gbm-column {
@@ -448,8 +449,8 @@
       margin-top: 12px;
       display: flex;
       flex-direction: column;
-      flex: 1 1 auto;
-      min-height: 100%;
+      flex: 0 1 auto;
+      min-height: 0;
     }
 
     .gbm-card:first-of-type {
@@ -521,7 +522,7 @@
     }
 
     .gbm-card-actions {
-      margin-top: auto;
+      margin-top: 10px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -607,6 +608,13 @@
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
+      align-items: start;
+    }
+
+    .gbm-related-grid .gbm-card {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
     }
 
     .gbm-related-loading,
@@ -1402,7 +1410,7 @@
           </div>
 
           <div class="gbm-answer">
-            Sorry â€” the chatbot encountered an error.
+            Sorry Ã¢â‚¬â€ the chatbot encountered an error.
           </div>
         </div>
       `;
