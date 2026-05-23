@@ -649,6 +649,7 @@ def make_rows_for_video(
             continue
 
         start = int(block["start"])
+        timestamp = format_transcript_timestamp(start)
         timestamp_url = f"https://www.youtube.com/watch?v={video_id}&t={start}s"
 
         full_text = clean_text(
