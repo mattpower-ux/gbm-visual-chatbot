@@ -1,4 +1,37 @@
 (function () {
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function renderAnswerMarkdown(value) {
+    let html = escapeHtml(value || "");
+
+    // Markdown links: [visible text](https://example.com)
+    html = html.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      function (_match, label, url) {
+        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
+      }
+    );
+
+    // Bold and italic, kept intentionally simple.
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    // Preserve paragraph breaks and line breaks.
+    html = html.replace(/\n{2,}/g, "</p><p>");
+    html = html.replace(/\n/g, "<br>");
+
+    return "<p>" + html + "</p>";
+  }
+
   if (window.GBM_DEEPTHINK_LOADED) return;
   window.GBM_DEEPTHINK_LOADED = true;
 
