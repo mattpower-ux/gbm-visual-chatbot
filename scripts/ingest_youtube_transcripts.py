@@ -549,6 +549,43 @@ def transcribe_audio_with_openai(video_id: str) -> list[dict[str, Any]]:
     return []
 
 
+def load_cached_transcripts() -> dict[str, dict[str, Any]]:
+    """Load locally synced transcript records keyed by YouTube video_id.
+
+    /data/youtube_transcripts.json is produced by the admin transcript sync
+    and currently stores records under a top-level "transcripts" list.
+    """
+    if not TRANSCRIPT_CACHE_FILE.exists():
+        print(f"No cached transcript file found at {TRANSCRIPT_CACHE_FILE}.")
+        return {}
+
+    try:
+        data = json.loads(TRANSCRIPT_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Failed loading cached transcripts: {exc}")
+        return {}
+
+    if isinstance(data, dict):
+        transcripts = data.get("transcripts", [])
+    elif isinstance(data, list):
+        transcripts = data
+    else:
+        transcripts = []
+
+    by_video_id: dict[str, dict[str, Any]] = {}
+
+    for item in transcripts:
+        if not isinstance(item, dict):
+            continue
+
+        video_id = str(item.get("video_id", "") or "").strip()
+        if video_id:
+            by_video_id[video_id] = item
+
+    print(f"Loaded {len(by_video_id)} cached scraped transcripts from {TRANSCRIPT_CACHE_FILE}.")
+    return by_video_id
+
+
 def cached_transcript_rows(
     video_id: str,
     cached_transcripts: dict[str, dict[str, Any]],
