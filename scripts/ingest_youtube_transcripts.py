@@ -176,7 +176,7 @@ def rows_from_plain_transcript_text(text: str) -> list[dict[str, Any]]:
             if current_lines:
                 flush()
             current_start = seconds_from_timestamp(match.group("ts"))
-            line = timestamp_re.sub(" ", line, count=1).strip(" -–—\t")
+            line = timestamp_re.sub(" ", line, count=1).strip(" -â€“â€”\t")
         elif current_start is None:
             current_start = 0.0
 
@@ -546,6 +546,41 @@ def transcript_to_blocks(
     return blocks
 
 
+
+def format_transcript_timestamp(seconds: int | float | str | None) -> str:
+    """Convert transcript start seconds into M:SS or H:MM:SS."""
+    if seconds is None or seconds == "":
+        return ""
+
+    try:
+        total = int(float(seconds))
+    except Exception:
+        return ""
+
+    if total < 0:
+        return ""
+
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def normalize_speaker_label(value: Any) -> str:
+    """Return a clean speaker label for transcript chunks."""
+    if value is None:
+        return ""
+
+    if isinstance(value, list):
+        value = ", ".join(str(v).strip() for v in value if str(v).strip())
+
+    text = clean_text(str(value))
+    return text.strip()
+
+
 def source_label(source_type: str) -> str:
     return "Green Builder Media Network" if source_type == "podcast" else "Green Builder Media YouTube"
 
@@ -592,6 +627,15 @@ def make_rows_for_video(
         or f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
     )
 
+    speaker_label = normalize_speaker_label(
+        video.get("speakers")
+        or video.get("speaker")
+        or video.get("guest")
+        or video.get("host")
+        or video.get("presenter")
+        or ""
+    )
+
     blocks = transcript_to_blocks(transcript)
     rows: list[dict[str, Any]] = []
 
@@ -615,8 +659,15 @@ def make_rows_for_video(
                 "url": timestamp_url,
                 "title": title,
                 "published_at": video.get("published_at"),
+                "speakers": speaker_label,
+                "speaker": speaker_label,
+                "timestamp": timestamp,
+                "timestamp_seconds": start,
+                "transcript_start": start,
+                "content_type": "Interview Transcript",
                 "category": "Podcast transcript" if source_type == "podcast" else "Video transcript",
                 "source_type": source_type,
+                "is_transcript": True,
                 "image": thumbnail,
                 "thumbnail": thumbnail,
                 "og_image": thumbnail,
