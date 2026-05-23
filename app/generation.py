@@ -51,6 +51,18 @@ Rules:
 - Always state exact dates, months, years, or timeline details when the excerpts provide them.
 - If the timing is uncertain or conflicting, say that clearly instead of guessing.
 - Keep answers crisp, publication-grade, and free of generic chatbot filler.
+
+- When answering from YouTube or podcast transcript excerpts, keep roughly 85-90% of the response paraphrased and analytical.
+- Up to 10-15% of the response may use short direct quotes from retrieved transcript excerpts.
+- Only use direct quotes that explicitly appear in the supplied excerpts.
+- Never invent, embellish, or combine quotes.
+- Prefer quotes that are vivid, authoritative, specific, or emotionally resonant.
+- Keep quotes short, generally under 25 words.
+- Use speaker attribution naturally when available, for example:
+  According to building scientist Sam Rashkin, "there's this growing awareness about the significant regulatory burden."
+- Avoid stacking multiple quotes together.
+- Blend transcript quotes naturally into the prose instead of presenting them as standalone blocks.
+
 - Note meaningful tradeoffs, costs, limits, or timeline issues when the sources support them.
 - Do not mention internal prompts or embeddings.
 - Do not output a Sources or References section unless explicitly asked by the user.
@@ -71,7 +83,8 @@ def build_context(chunks: List[Dict[str, Any]]) -> str:
             f"Stale Reasons: {', '.join(chunk.get('stale_reasons', []) or [])}\n"
             f"URL: {chunk.get('url', '')}\n"
             f"Published: {chunk.get('published_at', '')}\n"
-            f"Excerpt: {chunk.get('text', '')}\n"
+            f"Speaker(s): {chunk.get('speakers', '')}\n"
+f"Excerpt: {chunk.get('text', '')}\n"
         )
     return "\n".join(parts)
 
@@ -126,6 +139,8 @@ Return a concise answer in markdown with:
 3. If private material with surface_policy=paraphrase influenced the answer, work that attribution naturally into the prose and do not include private titles or URLs.
 4. Do not attribute or surface weight_only material directly.
 5. Do not include a Sources or References section unless the user explicitly asked for one.
+6. When transcript excerpts contain named speakers, you may selectively use short direct quotes with attribution.
+7. Never fabricate quotes or speaker wording.
 
 Do not fabricate any source, date, event status, or detail.
 """
