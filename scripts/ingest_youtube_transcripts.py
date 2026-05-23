@@ -31,6 +31,7 @@ YOUTUBE_CACHE_FILE = Path("/data/youtube_videos.json")
 PODCAST_CACHE_FILE = Path("/data/podcast_videos.json")
 TRANSCRIPT_STATUS_FILE = Path("/data/youtube_transcript_ingest_status.json")
 TRANSCRIPT_CACHE_FILE = Path("/data/youtube_transcripts.json")
+ONLY_INGEST_CACHED_TRANSCRIPTS = os.getenv("ONLY_INGEST_CACHED_TRANSCRIPTS", "true").lower() in {"1", "true", "yes", "on"}
 CAPTION_DIR = Path("/data/youtube_captions")
 AUDIO_DIR = Path("/data/youtube_audio")
 
@@ -479,6 +480,9 @@ def get_best_transcript(
         if rows:
             return rows, "cached_youtube_transcripts_json"
 
+    if ONLY_INGEST_CACHED_TRANSCRIPTS:
+        return [], "cached_only_no_local_transcript"
+
     rows = fetch_transcript_api(video_id)
     if rows:
         return rows, "youtube_transcript_api"
@@ -759,6 +763,8 @@ def main() -> None:
     media_items.extend((item, "podcast") for item in podcasts)
 
     print(f"Loaded {len(videos)} videos and {len(podcasts)} podcasts.")
+    if ONLY_INGEST_CACHED_TRANSCRIPTS:
+        print("Cached-only transcript ingest is ON. Videos without local /data/youtube_transcripts.json records will be skipped without YouTube API, yt-dlp, or audio fallback.")
 
     existing_ids = existing_transcript_ids()
     cached_transcripts = load_cached_transcript_index()
@@ -844,6 +850,7 @@ def main() -> None:
         "cached_transcripts_loaded": len(cached_transcripts),
         "chunks_prepared": len(all_rows),
         "chunks_added": added,
+        "only_ingest_cached_transcripts": ONLY_INGEST_CACHED_TRANSCRIPTS,
         "whisper_fallback_enabled": ENABLE_WHISPER_FALLBACK,
         "whisper_videos_used": whisper_budget["used"],
         "max_whisper_videos_per_run": MAX_WHISPER_VIDEOS_PER_RUN,
