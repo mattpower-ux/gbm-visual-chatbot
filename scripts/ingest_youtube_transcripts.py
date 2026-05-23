@@ -177,7 +177,7 @@ def rows_from_plain_transcript_text(text: str) -> list[dict[str, Any]]:
             if current_lines:
                 flush()
             current_start = seconds_from_timestamp(match.group("ts"))
-            line = timestamp_re.sub(" ", line, count=1).strip(" -â€“â€”\t")
+            line = timestamp_re.sub(" ", line, count=1).strip(" -–—\t")
         elif current_start is None:
             current_start = 0.0
 
@@ -227,6 +227,87 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\[[^\]]+\]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def split_cached_plain_text_transcript(text: str, max_chars: int = 1800) -> list[dict[str, Any]]:
+    """Convert a cached transcript stored as one plain text string into pseudo-timestamped rows.
+
+    The hand-synced /data/youtube_transcripts.json records currently store transcript text
+    in a single `text` field, not as YouTube API rows. This helper converts that text into
+    row-like segments so the normal transcript_to_blocks() pipeline can index it.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    # Preserve readable speaker/timestamp lines if present, but normalize excessive whitespace.
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", cleaned) if p.strip()]
+    if not paragraphs:
+        paragraphs = [cleaned]
+
+    rows: list[dict[str, Any]] = []
+    buffer: list[str] = []
+    start_seconds = 0.0
+
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+
+        candidate = "\n\n".join(buffer + [paragraph]).strip()
+        if len(candidate) >= max_chars and buffer:
+            segment = "\n\n".join(buffer).strip()
+            rows.append({
+                "text": segment,
+                "start": start_seconds,
+                "duration": max(len(segment) / 14.0, 1.0),
+            })
+            start_seconds += max(len(segment) / 14.0, 1.0)
+            buffer = [paragraph]
+        else:
+            buffer.append(paragraph)
+
+    if buffer:
+        segment = "\n\n".join(buffer).strip()
+        rows.append({
+            "text": segment,
+            "start": start_seconds,
+            "duration": max(len(segment) / 14.0, 1.0),
+        })
+
+    return rows
+
+
+def cached_record_to_transcript_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Accept cached transcript records in any supported shape and return row dicts."""
+    if not record:
+        return []
+
+    for key in ("rows", "segments", "transcript"):
+        value = record.get(key)
+        if isinstance(value, list):
+            rows: list[dict[str, Any]] = []
+            for item in value:
+                if isinstance(item, dict):
+                    text_value = clean_text(str(item.get("text", "") or item.get("caption", "") or ""))
+                    if text_value:
+                        rows.append({
+                            "text": text_value,
+                            "start": float(item.get("start", item.get("start_seconds", 0.0)) or 0.0),
+                            "duration": float(item.get("duration", 1.0) or 1.0),
+                        })
+                elif isinstance(item, str) and item.strip():
+                    rows.extend(split_cached_plain_text_transcript(item))
+            return rows
+
+        if isinstance(value, str) and value.strip():
+            return split_cached_plain_text_transcript(value)
+
+    text_value = record.get("text")
+    if isinstance(text_value, str) and text_value.strip():
+        return split_cached_plain_text_transcript(text_value)
+
+    return []
 
 
 def seconds_from_timestamp(raw: str) -> float:
@@ -466,6 +547,26 @@ def transcribe_audio_with_openai(video_id: str) -> list[dict[str, Any]]:
         audio_path.unlink(missing_ok=True)
 
     return []
+
+
+def cached_transcript_rows(
+    video_id: str,
+    cached_transcripts: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return transcript rows from locally cached /data/youtube_transcripts.json records.
+
+    Supports records stored as:
+    - {"rows": [...]}
+    - {"segments": [...]}
+    - {"transcript": [...]}
+    - {"transcript": "plain text"}
+    - {"text": "plain text"}
+    """
+    record = cached_transcripts.get(video_id)
+    if not record:
+        return []
+
+    return cached_record_to_transcript_rows(record)
 
 
 def get_best_transcript(
