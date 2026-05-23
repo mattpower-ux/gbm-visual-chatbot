@@ -55,10 +55,13 @@ Rules:
 
 - When answering from YouTube or podcast transcript excerpts, keep roughly 85-90% of the response paraphrased and analytical.
 - Up to 10-15% of the response may use short direct quotes from retrieved transcript excerpts.
+- If one or more transcript excerpts directly answer the user's question, include exactly one short direct quote from the most relevant excerpt unless no clear quotable wording exists.
+- Prefer transcript excerpts with named speakers and timestamps.
 - Only use direct quotes that explicitly appear in the supplied excerpts.
 - Never invent, embellish, or combine quotes.
 - Prefer quotes that are vivid, authoritative, specific, or emotionally resonant.
 - Keep quotes short, generally under 25 words.
+- Use natural journalistic attribution instead of internal source labels like "Source 2" or "Source 3".
 - Use speaker attribution naturally when available, for example:
   According to building scientist Sam Rashkin, "there's this growing awareness about the significant regulatory burden."
 - Avoid stacking multiple quotes together.
@@ -218,9 +221,10 @@ Return a concise answer in markdown with:
 3. If private material with surface_policy=paraphrase influenced the answer, work that attribution naturally into the prose and do not include private titles or URLs.
 4. Do not attribute or surface weight_only material directly.
 5. Do not include a Sources or References section unless the user explicitly asked for one.
-6. When transcript excerpts contain named speakers, you may selectively use short direct quotes with attribution.
+6. When transcript excerpts contain named speakers and directly address the user's question, include one short direct quote with natural attribution whenever possible.
 7. Never fabricate quotes or speaker wording.
 8. If a transcript quote has a timestamp, include it in parentheses immediately after the quote.
+9. Never refer to excerpts using labels like "Source 1", "Source 2", or "Source 3" in the prose response.
 
 Do not fabricate any source, date, event status, or detail.
 """
