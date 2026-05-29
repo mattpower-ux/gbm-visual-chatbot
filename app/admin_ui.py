@@ -81,6 +81,7 @@ HTML = r"""
     <button id="rebuild-index-btn" class="header-btn">Rebuild Index</button>
     <button id="check-rebuild-status-btn" class="header-btn secondary">Check Status</button>
     <button id="sync-hot-takes-btn" class="header-btn secondary">Sync Hot Takes</button>
+    <button id="sync-cognition-btn" class="header-btn secondary">Sync Cognition Drive</button>
     <button id="sync-youtube-transcripts-btn" class="header-btn secondary">UPDATE YT TRANSCRIPTS</button>
     <span id="rebuild-status">Index status: idle</span>
   </div>
@@ -89,6 +90,7 @@ HTML = r"""
 <main>
   <div class="notice" id="prefillNotice" style="display:none"></div>
   <div class="notice" id="youtube-transcript-status" style="display:none"></div>
+  <div class="notice" id="cognition-sync-status" style="display:none"></div>
 
   <section class="card upload-box">
     <h2 style="margin-top:0">Upload magazine PDF(s)</h2>
@@ -289,6 +291,94 @@ async function fetchJson(url, options = {}) {
   return { res, data, rawText };
 }
 
+
+
+async function syncCognitionDrive() {
+  const statusEl = document.getElementById("cognition-sync-status");
+  const headerStatusEl = document.getElementById("rebuild-status");
+
+  if (statusEl) {
+    statusEl.style.display = "block";
+    statusEl.textContent = "Starting COGNITION Drive sync...";
+  }
+  if (headerStatusEl) {
+    headerStatusEl.textContent = "Syncing COGNITION Drive...";
+  }
+
+  try {
+    const { res, data, rawText } = await fetchJson("/api/admin/sync-cognition", {
+      method: "POST"
+    });
+
+    if (!res.ok || data.ok === false) {
+      const message = "COGNITION sync failed: " + (data.error || data.detail || data.message || rawText.slice(0, 300) || "Unknown error");
+      if (statusEl) statusEl.textContent = message;
+      if (headerStatusEl) headerStatusEl.textContent = "COGNITION sync failed.";
+      return;
+    }
+
+    const message = data.message || "COGNITION sync started.";
+    if (statusEl) statusEl.textContent = message;
+    if (headerStatusEl) headerStatusEl.textContent = "COGNITION sync started.";
+    pollCognitionSyncStatus();
+  } catch (err) {
+    const message = "COGNITION sync error: " + err.message;
+    if (statusEl) {
+      statusEl.style.display = "block";
+      statusEl.textContent = message;
+    }
+    if (headerStatusEl) headerStatusEl.textContent = "COGNITION sync error.";
+  }
+}
+
+async function checkCognitionSyncStatus() {
+  const statusEl = document.getElementById("cognition-sync-status");
+  const headerStatusEl = document.getElementById("rebuild-status");
+
+  try {
+    const { res, data, rawText } = await fetchJson("/api/admin/sync-cognition-status", {
+      method: "GET"
+    });
+
+    if (!res.ok || data.ok === false) {
+      const message = "COGNITION status failed: " + (data.error || data.detail || data.message || rawText.slice(0, 300) || "Unknown error");
+      if (statusEl) {
+        statusEl.style.display = "block";
+        statusEl.textContent = message;
+      }
+      return false;
+    }
+
+    const syncStatus = data.status || {};
+    const running = !!syncStatus.running;
+    const message = syncStatus.last_error
+      ? `COGNITION sync failed: ${syncStatus.last_error}`
+      : `COGNITION sync status: ${syncStatus.message || "idle"}`;
+
+    if (statusEl) {
+      statusEl.style.display = "block";
+      statusEl.textContent = message;
+    }
+    if (headerStatusEl && !running) {
+      headerStatusEl.textContent = syncStatus.message === "Completed" ? "COGNITION sync completed." : headerStatusEl.textContent;
+    }
+
+    return running;
+  } catch (err) {
+    if (statusEl) {
+      statusEl.style.display = "block";
+      statusEl.textContent = "COGNITION status error: " + err.message;
+    }
+    return false;
+  }
+}
+
+function pollCognitionSyncStatus() {
+  const interval = setInterval(async () => {
+    const running = await checkCognitionSyncStatus();
+    if (!running) clearInterval(interval);
+  }, 5000);
+}
 
 async function syncHotTakes() {
   const statusEl = document.getElementById("rebuild-status");
@@ -909,6 +999,7 @@ bindClick("clean-unused-pdfs-btn", cleanUnusedPDFs);
 bindClick("uploadThumbBtn", uploadThumbnailOverride);
 bindClick("rebuild-index-btn", rebuildIndex);
 bindClick("sync-hot-takes-btn", syncHotTakes);
+bindClick("sync-cognition-btn", syncCognitionDrive);
 bindClick("sync-youtube-transcripts-btn", syncYouTubeTranscripts);
 bindClick("check-rebuild-status-btn", checkRebuildStatus);
 
