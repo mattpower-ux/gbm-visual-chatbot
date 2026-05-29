@@ -1115,15 +1115,22 @@
 
   function renderHotTake(payload, articles) {
     const hot = payload.hot_take || payload.hotTake || payload.cognition_hot_take || {};
+    const hasHotObject = hot && Object.keys(hot).length > 0;
     const articleFallback = firstUsableArticle(articles);
+
+    const sourceType = String(hot.source_type || hot.type || "").toLowerCase();
+    const isCognitionInsight = sourceType === "cognition_insight";
 
     const title =
       hot.title ||
+      hot.headline ||
       hot.article_title ||
       hot.articleTitle ||
       "COGNITION SmartData";
 
     const articleUrl =
+      hot.drive_url ||
+      hot.driveUrl ||
       hot.article_url ||
       hot.articleUrl ||
       hot.url ||
@@ -1132,28 +1139,84 @@
     const chartImage =
       hot.chart_image ||
       hot.chartImage ||
+      hot.chart_image_url ||
+      hot.chartImageUrl ||
+      hot.chart_url ||
+      hot.chartUrl ||
       hot.image ||
       hot.image_url ||
+      hot.imageUrl ||
       hot.thumbnail ||
       hot.thumbnail_url ||
-      COGNITION_FALLBACK_CHART_URL;
+      hot.thumbnailUrl ||
+      "";
+
+    // COGNITION Insight cards must be chart-backed. If the backend ever sends
+    // a text-only COGNITION result, do not render it. Let the UI fall back to
+    // the older Hot Take/card behavior rather than showing an empty chart box.
+    if (isCognitionInsight && !chartImage) {
+      return "";
+    }
+
+    const displayImage = chartImage || COGNITION_FALLBACK_CHART_URL;
+
+    const kicker =
+      hot.label ||
+      (isCognitionInsight ? "COGNITION INSIGHT" : "KEY INSIGHT");
 
     const caption =
       hot.caption ||
       hot.summary ||
-      "COGNITION SmartData highlights the market signals, consumer behavior, and building-science trends behind this topic. As the Hot Take chart library is connected to the backend, this area will automatically display the most relevant data graphic for each query.";
+      hot.excerpt ||
+      "COGNITION SmartData highlights the market signals, consumer behavior, and building-science trends behind this topic.";
+
+    const primaryLinkText = isCognitionInsight ? "Open source insight" : "Read full analysis";
+
+    // If there is no backend hot_take object, preserve the older generic Hot Take
+    // placeholder behavior so the visual layout does not collapse.
+    if (!hasHotObject && !articleFallback) {
+      return `
+        <div class="gbm-hot-take">
+          <div class="gbm-hot-take-inner">
+            <div class="gbm-hot-copy">
+              <div class="gbm-hot-kicker">KEY INSIGHT</div>
+              <div class="gbm-hot-title">${esc(title)}</div>
+              <div class="gbm-hot-caption">${esc(caption)}</div>
+              <div class="gbm-hot-links">
+                <a class="gbm-hot-link gbm-hot-link-primary" href="${COGNITION_SMART_DATA_URL}" target="_blank" rel="noopener">
+                  More COGNITION insights
+                </a>
+              </div>
+            </div>
+            <div class="gbm-hot-image-wrap">
+              <a href="${abs(displayImage)}" target="_blank" rel="noopener">
+                <img
+                  class="gbm-hot-image"
+                  src="${abs(displayImage)}"
+                  onerror="this.onerror=null;this.src='${abs(COGNITION_FALLBACK_CHART_URL)}';"
+                  alt="COGNITION data graphic"
+                />
+              </a>
+              <a class="gbm-expand-image" href="${abs(displayImage)}" target="_blank" rel="noopener">
+                Expand image
+              </a>
+            </div>
+          </div>
+        </div>
+      `;
+    }
 
     return `
-      <div class="gbm-hot-take">
+      <div class="gbm-hot-take ${isCognitionInsight ? "gbm-cognition-insight" : ""}">
         <div class="gbm-hot-take-inner">
           <div class="gbm-hot-copy">
-            <div class="gbm-hot-kicker">KEY INSIGHT</div>
+            <div class="gbm-hot-kicker">${esc(kicker)}</div>
             <div class="gbm-hot-title">${esc(title)}</div>
             <div class="gbm-hot-caption">${esc(caption)}</div>
 
             <div class="gbm-hot-links">
               <a class="gbm-hot-link gbm-hot-link-primary" href="${abs(articleUrl)}" target="_blank" rel="noopener">
-                Read full analysis
+                ${esc(primaryLinkText)}
               </a>
               <a class="gbm-hot-link" href="${COGNITION_SMART_DATA_URL}" target="_blank" rel="noopener">
                 More COGNITION insights
@@ -1162,15 +1225,15 @@
           </div>
 
           <div class="gbm-hot-image-wrap">
-            <a href="${abs(chartImage)}" target="_blank" rel="noopener">
+            <a href="${abs(displayImage)}" target="_blank" rel="noopener">
               <img
                 class="gbm-hot-image"
-                src="${abs(chartImage)}"
+                src="${abs(displayImage)}"
                 onerror="this.onerror=null;this.src='${abs(COGNITION_FALLBACK_CHART_URL)}';"
                 alt="COGNITION data graphic"
               />
             </a>
-            <a class="gbm-expand-image" href="${abs(chartImage)}" target="_blank" rel="noopener">
+            <a class="gbm-expand-image" href="${abs(displayImage)}" target="_blank" rel="noopener">
               Expand image
             </a>
           </div>
