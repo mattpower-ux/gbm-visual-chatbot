@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -41,6 +42,18 @@ from app.retrieval import search
 from app.hot_take_matcher import best_hot_take
 
 settings = get_settings()
+
+# === COGNITION Drive Insight Index ===
+COGNITION_TABLE_NAME = os.getenv("COGNITION_TABLE_NAME", "cognition_insights")
+COGNITION_EMBED_MODEL = os.getenv("COGNITION_EMBED_MODEL", "text-embedding-3-small")
+COGNITION_LANCEDB_PATH = os.getenv("LANCEDB_PATH", "/data/lancedb")
+COGNITION_SYNC_STATUS = {
+    "running": False,
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_error": None,
+    "message": "Not yet run",
+}
 
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
@@ -1944,6 +1957,67 @@ def _build_key_insights(answer: str) -> list[dict[str, str]]:
     return insights
 
 
+
+def find_best_cognition_insight(query: str) -> dict[str, Any] | None:
+    """Return the best COGNITION Insight card for the visual chatbot.
+
+    This does not affect answer generation. It only supplies the top visual
+    COGNITION card, falling back to the older Hot Take matcher if no indexed
+    COGNITION table exists yet.
+    """
+    if not query:
+        return None
+
+    try:
+        import lancedb
+        from openai import OpenAI
+
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        vector = client.embeddings.create(
+            model=COGNITION_EMBED_MODEL,
+            input=query,
+        ).data[0].embedding
+
+        db = lancedb.connect(COGNITION_LANCEDB_PATH)
+
+        if COGNITION_TABLE_NAME not in db.table_names():
+            return None
+
+        table = db.open_table(COGNITION_TABLE_NAME)
+        results = table.search(vector).limit(3).to_list()
+
+        if not results:
+            return None
+
+        best = results[0]
+        chart_image_id = str(best.get("chart_image_id") or "").strip()
+        image_url = f"/api/cognition/image/{chart_image_id}" if chart_image_id else ""
+
+        return {
+            "source_type": "cognition_insight",
+            "type": "cognition_insight",
+            "label": "COGNITION INSIGHT",
+            "title": best.get("title") or best.get("headline") or "COGNITION Insight",
+            "headline": best.get("headline") or best.get("title") or "COGNITION Insight",
+            "summary": best.get("summary") or "",
+            "body": best.get("body") or "",
+            "folder_name": best.get("folder_name") or "",
+            "question_id": best.get("question_id") or "",
+            "image": image_url,
+            "image_url": image_url,
+            "thumbnail": image_url,
+            "thumbnail_url": image_url,
+            "chart_image_id": chart_image_id,
+            "drive_url": best.get("drive_url") or "",
+            "url": best.get("drive_url") or "",
+            "source": "COGNITION Smart Data",
+            "score_debug": best.get("_distance"),
+        }
+
+    except Exception as exc:
+        print(f"COGNITION insight search failed: {exc}")
+        return None
+
 def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None, question: str = "") -> dict[str, Any]:
     """Return the backward-compatible answer plus visual-mode fields."""
     chunks = chunks or []
@@ -1968,9 +2042,11 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
     podcasts = search_podcasts(question, limit=2) if question else []
 
     try:
-        hot_take = best_hot_take(question) if question else None
+        hot_take = find_best_cognition_insight(question) if question else None
+        if not hot_take:
+            hot_take = best_hot_take(question) if question else None
     except Exception as exc:
-        print(f"Hot Take matching failed: {exc}")
+        print(f"COGNITION / Hot Take matching failed: {exc}")
         hot_take = None
 
     base.update(
@@ -2309,6 +2385,88 @@ def admin_sync_hot_takes(_: str = Depends(admin_auth)) -> dict:
             ),
             "error": str(exc),
         }
+
+
+@app.post("/api/admin/sync-cognition")
+def admin_sync_cognition(background_tasks: BackgroundTasks, _: str = Depends(admin_auth)) -> dict:
+    if COGNITION_SYNC_STATUS["running"]:
+        return {
+            "ok": False,
+            "message": "COGNITION sync is already running.",
+            "status": COGNITION_SYNC_STATUS,
+        }
+
+    def _run_sync() -> None:
+        COGNITION_SYNC_STATUS["running"] = True
+        COGNITION_SYNC_STATUS["last_started_at"] = datetime.utcnow().isoformat() + "Z"
+        COGNITION_SYNC_STATUS["last_error"] = None
+        COGNITION_SYNC_STATUS["message"] = "Running"
+
+        try:
+            from app.ingest_cognition_drive import main as ingest_cognition_main
+            ingest_cognition_main()
+            COGNITION_SYNC_STATUS["message"] = "Completed"
+        except Exception as exc:
+            COGNITION_SYNC_STATUS["last_error"] = str(exc)
+            COGNITION_SYNC_STATUS["message"] = "Failed"
+        finally:
+            COGNITION_SYNC_STATUS["running"] = False
+            COGNITION_SYNC_STATUS["last_finished_at"] = datetime.utcnow().isoformat() + "Z"
+
+    background_tasks.add_task(_run_sync)
+    return {
+        "ok": True,
+        "message": "COGNITION sync started.",
+        "status": COGNITION_SYNC_STATUS,
+    }
+
+
+@app.get("/api/admin/sync-cognition-status")
+def admin_sync_cognition_status(_: str = Depends(admin_auth)) -> dict:
+    return {
+        "ok": True,
+        "status": COGNITION_SYNC_STATUS,
+    }
+
+
+@app.get("/api/cognition/image/{file_id}")
+def public_cognition_image(file_id: str) -> Response:
+    """Serve a COGNITION chart image from Google Drive through the bot backend."""
+    clean_file_id = re.sub(r"[^A-Za-z0-9_-]", "", file_id or "")
+    if not clean_file_id:
+        raise HTTPException(status_code=404, detail="Image not found.")
+
+    raw_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not raw_json:
+        raise HTTPException(status_code=500, detail="Missing GOOGLE_SERVICE_ACCOUNT_JSON")
+
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+
+    credentials = Credentials.from_service_account_info(
+        json.loads(raw_json),
+        scopes=["https://www.googleapis.com/auth/drive.readonly"],
+    )
+
+    drive = build("drive", "v3", credentials=credentials)
+
+    meta = drive.files().get(
+        fileId=clean_file_id,
+        fields="id,name,mimeType",
+        supportsAllDrives=True,
+    ).execute()
+
+    mime = meta.get("mimeType", "image/png")
+
+    request = drive.files().get_media(fileId=clean_file_id)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    return Response(content=buf.getvalue(), media_type=mime)
 
 
 @app.get("/api/admin/sync-youtube")
