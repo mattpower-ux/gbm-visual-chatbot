@@ -1984,14 +1984,24 @@ def find_best_cognition_insight(query: str) -> dict[str, Any] | None:
             return None
 
         table = db.open_table(COGNITION_TABLE_NAME)
-        results = table.search(vector).limit(3).to_list()
 
-        if not results:
+        # Important visual-card rule:
+        # Do not surface COGNITION text-only records in the featured card.
+        # COGNITION should only replace the legacy Hot Take when the matched
+        # insight has an accompanying chart image. Otherwise, return None and
+        # let the existing best_hot_take() fallback handle the card.
+        results = table.search(vector).limit(50).to_list()
+        chart_results = [
+            r for r in results
+            if str(r.get("chart_image_id") or "").strip()
+        ]
+
+        if not chart_results:
             return None
 
-        best = results[0]
+        best = chart_results[0]
         chart_image_id = str(best.get("chart_image_id") or "").strip()
-        image_url = f"/api/cognition/image/{chart_image_id}" if chart_image_id else ""
+        image_url = f"/api/cognition/image/{chart_image_id}"
 
         return {
             "source_type": "cognition_insight",
