@@ -1533,6 +1533,70 @@ def _tokenize_for_video_search(text: str) -> list[str]:
     return [w for w in words if w not in stop_words]
 
 
+# Shared subject anchors for visual-card relevance. These prevent broad words
+# like "sustainable" from pulling unrelated COGNITION charts or videos.
+VISUAL_SUBJECT_ALIASES: dict[str, list[str]] = {
+    "countertop": [
+        "countertop", "countertops", "counter top", "counter tops",
+        "kitchen counter", "kitchen counters", "worktop", "worktops",
+        "quartz", "granite", "marble", "laminate", "butcher block",
+        "wood counter", "solid surface", "paperstone", "richlite",
+        "recycled glass", "porcelain slab", "engineered stone",
+        "sintered stone", "soapstone", "stainless steel",
+        "concrete countertop",
+    ],
+    "cabinet": ["cabinet", "cabinets", "cabinetry", "kitchen cabinet", "kitchen cabinets"],
+    "flooring": ["flooring", "floor", "floors", "hardwood", "bamboo", "cork", "vinyl", "tile", "carpet"],
+    "insulation": ["insulation", "fiberglass", "cellulose", "mineral wool", "rockwool", "spray foam", "closed-cell", "open-cell", "rigid foam"],
+    "window": ["window", "windows", "glazing", "double pane", "triple pane", "low-e", "u-factor", "shgc"],
+    "roofing": ["roof", "roofs", "roofing", "shingle", "shingles", "metal roof", "cool roof", "solar shingle"],
+    "heat pump": ["heat pump", "heat pumps", "hvac", "mini split", "minisplit", "air source", "ground source", "geothermal", "compressor", "inverter"],
+    "solar": ["solar", "photovoltaic", "pv", "solar panel", "solar panels", "inverter", "microinverter", "battery", "storage", "microgrid"],
+    "water heater": ["water heater", "water heaters", "heat pump water heater", "tankless", "hybrid water heater"],
+    "thermostat": ["thermostat", "thermostats", "smart thermostat", "connected thermostat", "controls"],
+    "indoor air": ["indoor air", "iaq", "air quality", "ventilation", "erv", "hrv", "humidity", "dehumidifier", "mold", "mildew"],
+    "appliance": ["appliance", "appliances", "refrigerator", "dishwasher", "range", "oven", "induction", "cooktop"],
+}
+
+
+def _visual_subject_aliases_for_query(query: str) -> tuple[str | None, list[str]]:
+    q = (query or "").lower()
+    for subject, aliases in VISUAL_SUBJECT_ALIASES.items():
+        if subject in q or any(alias in q for alias in aliases):
+            return subject, aliases
+    return None, []
+
+
+def _visual_subject_hit_count(query: str, text: str) -> int:
+    _subject, aliases = _visual_subject_aliases_for_query(query)
+    if not aliases:
+        return 0
+    blob = (text or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]+", blob))
+    hits = 0
+    for alias in aliases:
+        alias_l = alias.lower().strip()
+        if not alias_l:
+            continue
+        if " " in alias_l or "-" in alias_l:
+            if alias_l in blob:
+                hits += 1
+        elif alias_l in tokens:
+            hits += 1
+    return hits
+
+
+def _visual_subject_required(query: str) -> bool:
+    _subject, aliases = _visual_subject_aliases_for_query(query)
+    return bool(aliases)
+
+
+def _passes_visual_subject_gate(query: str, text: str) -> bool:
+    if not _visual_subject_required(query):
+        return True
+    return _visual_subject_hit_count(query, text) > 0
+
+
 def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
     """Return the best matching GBM YouTube videos for a chatbot query.
 
@@ -1578,6 +1642,18 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
                 score += 6.0
             if transcript and phrase in q_lower and phrase in transcript_lower:
                 score += 4.0
+
+        subject_hits = _visual_subject_hit_count(query, haystack)
+        if _visual_subject_required(query):
+            if subject_hits == 0:
+                continue
+            score += min(subject_hits * 5.0, 15.0)
+
+        subject_hits = _visual_subject_hit_count(query, haystack)
+        if _visual_subject_required(query):
+            if subject_hits == 0:
+                continue
+            score += min(subject_hits * 5.0, 15.0)
 
         if score > 0:
             enriched = dict(video)
@@ -1995,6 +2071,21 @@ def find_best_cognition_insight(query: str) -> dict[str, Any] | None:
             r for r in results
             if str(r.get("chart_image_id") or "").strip()
         ]
+
+        if _visual_subject_required(query):
+            chart_results = [
+                r for r in chart_results
+                if _passes_visual_subject_gate(
+                    query,
+                    "\n".join(
+                        str(r.get(key) or "")
+                        for key in (
+                            "title", "headline", "summary", "body", "folder_name",
+                            "question_id", "doc_name", "workbook_name", "chart_image_name",
+                        )
+                    ),
+                )
+            ]
 
         if not chart_results:
             return None
