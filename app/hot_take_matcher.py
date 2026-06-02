@@ -21,6 +21,10 @@ STOP_WORDS = {
     "media", "cognition", "smart", "data", "home", "homes", "house",
     "housing", "tell", "give", "show", "explain", "changes", "changed",
     "technology", "technologies", "query", "need", "want",
+    # These words are too generic for retrieval scoring. They can appear in
+    # almost every GBM/COGNITION item and should not make a weak result look relevant.
+    "sustainable", "sustainability", "greenest", "best", "better", "material", "materials",
+    "product", "products", "building", "buildings", "residential", "consumer", "consumers",
 }
 
 PHRASE_ALIASES: dict[str, set[str]] = {
@@ -33,6 +37,16 @@ PHRASE_ALIASES: dict[str, set[str]] = {
     "indoor air": {"indoor air", "iaq", "ventilation", "humidity", "dehumidifier", "air quality", "mold", "mildew"},
     "outdoor living": {"outdoor", "outdoor living", "outdoor spaces", "yard", "patio", "landscape"},
     "affordability": {"affordability", "affordable", "cost", "price", "mortgage", "rent", "income"},
+    "countertop": {
+        "countertop", "countertops", "counter top", "counter tops", "worktop", "worktops",
+        "kitchen counter", "kitchen counters", "surface", "surfaces", "solid surface",
+        "quartz", "granite", "marble", "laminate", "butcher block", "wood counter",
+        "paperstone", "richlite", "recycled glass", "porcelain slab", "stainless steel",
+        "engineered stone", "sintered stone", "soapstone", "concrete countertop",
+    },
+    "cabinet": {"cabinet", "cabinets", "cabinetry", "kitchen cabinet", "kitchen cabinets"},
+    "flooring": {"flooring", "floor", "floors", "hardwood", "bamboo", "cork", "vinyl", "tile", "carpet"},
+    "appliance": {"appliance", "appliances", "refrigerator", "dishwasher", "range", "oven", "induction"},
 }
 
 NEGATIVE_CLUSTERS: dict[str, set[str]] = {
@@ -40,6 +54,9 @@ NEGATIVE_CLUSTERS: dict[str, set[str]] = {
     "hvac": {"outdoor living", "outdoor spaces", "patio", "kitchen", "bath", "interior", "finishes", "luxury"},
     "thermostat": {"outdoor living", "outdoor spaces", "patio", "kitchen", "bath", "interior", "finishes", "luxury"},
     "solar": {"outdoor living", "kitchen", "bath", "interior", "finishes"},
+    "countertop": {"heat pump", "hvac", "thermostat", "solar", "battery", "water heater", "insulation", "window", "windows", "roof", "roofing"},
+    "countertops": {"heat pump", "hvac", "thermostat", "solar", "battery", "water heater", "insulation", "window", "windows", "roof", "roofing"},
+    "kitchen counter": {"heat pump", "hvac", "thermostat", "solar", "battery", "water heater", "insulation"},
 }
 
 
@@ -75,6 +92,62 @@ def score_overlap(query_tokens: set[str], text: str) -> float:
 def phrase_hits(phrases: Iterable[str], text: str) -> set[str]:
     blob = (text or "").lower()
     return {phrase for phrase in phrases if phrase and phrase in blob}
+
+
+def high_value_query_terms(query: str) -> set[str]:
+    """Return query terms that should be treated as hard relevance anchors.
+
+    Generic terms such as sustainable/sustainability are intentionally removed
+    by STOP_WORDS. For a query like "which countertop is most sustainable",
+    "countertop" becomes the anchor that must appear in the matched content
+    or one of its aliases must appear.
+    """
+    terms = set(tokenize(query))
+    expanded = set(terms)
+
+    q = (query or "").lower()
+    for phrase, aliases in PHRASE_ALIASES.items():
+        if phrase in q or any(alias in q for alias in aliases):
+            expanded.add(phrase)
+            expanded.update(aliases)
+
+    return {t for t in expanded if t and t not in STOP_WORDS}
+
+
+def has_anchor_match(query: str, text: str) -> bool:
+    anchors = high_value_query_terms(query)
+    if not anchors:
+        return True
+
+    blob = (text or "").lower()
+    text_tokens = set(tokenize(blob))
+
+    for anchor in anchors:
+        if " " in anchor:
+            if anchor in blob:
+                return True
+        elif anchor in text_tokens:
+            return True
+
+    return False
+
+
+def anchor_match_count(query: str, text: str) -> int:
+    anchors = high_value_query_terms(query)
+    if not anchors:
+        return 0
+
+    blob = (text or "").lower()
+    text_tokens = set(tokenize(blob))
+
+    count = 0
+    for anchor in anchors:
+        if " " in anchor:
+            if anchor in blob:
+                count += 1
+        elif anchor in text_tokens:
+            count += 1
+    return count
 
 
 def graphic_text_blob(graphic: dict) -> str:
@@ -150,8 +223,25 @@ def rank_graphic(query: str, graphic: dict) -> float:
 
     # Require at least a little real connection to the visible chart/alt text.
     # Otherwise, the score is discounted heavily even if article text overlaps.
-    if strong_overlap_count(query, graphic) < HOT_TAKE_MIN_STRONG_OVERLAP:
+    strong_overlap = strong_overlap_count(query, graphic)
+    if strong_overlap < HOT_TAKE_MIN_STRONG_OVERLAP:
         score *= 0.35
+
+    # New stricter guard:
+    # A broad sustainability query should not pull a chart unless the user's
+    # actual subject anchor is present somewhere in the chart/title/alt/OCR/body.
+    # Example: "which countertop is most sustainable" must match countertop,
+    # quartz, granite, recycled glass, etc.; "sustainable" alone is not enough.
+    blob = graphic_text_blob(graphic)
+    strong_blob = " ".join(str(graphic.get(k, "") or "") for k in ("ocr_text", "chart_title", "alt"))
+
+    if not has_anchor_match(query, blob):
+        return 0.0
+
+    # Visible chart/alt text gets an additional anchor bonus. This favors charts
+    # that actually display the subject over articles that merely mention it nearby.
+    score += anchor_match_count(query, strong_blob) * 6.0
+    score += anchor_match_count(query, blob) * 1.5
 
     score -= category_penalty(query, graphic)
     return max(score, 0.0)
