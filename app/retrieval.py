@@ -52,6 +52,150 @@ FRANCHISE_TERMS = [
     "symposium",
 ]
 
+# Subject anchors prevent broad semantic terms like “sustainable” from
+# pulling unrelated content. Example: a countertop query should not retrieve
+# heat-pump content merely because both discuss sustainability.
+SUBJECT_ALIASES: dict[str, list[str]] = {
+    "countertop": [
+        "countertop", "countertops", "counter top", "counter tops",
+        "kitchen counter", "kitchen counters", "worktop", "worktops",
+        "quartz", "granite", "marble", "laminate", "butcher block",
+        "wood counter", "solid surface", "paperstone", "richlite",
+        "recycled glass", "porcelain slab", "engineered stone",
+        "sintered stone", "soapstone", "stainless steel",
+        "concrete countertop",
+    ],
+    "cabinet": [
+        "cabinet", "cabinets", "cabinetry", "kitchen cabinet",
+        "kitchen cabinets",
+    ],
+    "flooring": [
+        "flooring", "floor", "floors", "hardwood", "bamboo",
+        "cork", "vinyl", "tile", "carpet",
+    ],
+    "insulation": [
+        "insulation", "insulate", "insulated", "fiberglass",
+        "cellulose", "mineral wool", "rockwool", "spray foam",
+        "closed-cell", "open-cell", "rigid foam",
+    ],
+    "window": [
+        "window", "windows", "glazing", "double pane", "triple pane",
+        "low-e", "u-factor", "shgc",
+    ],
+    "roofing": [
+        "roof", "roofs", "roofing", "shingle", "shingles",
+        "metal roof", "cool roof", "solar shingle",
+    ],
+    "heat pump": [
+        "heat pump", "heat pumps", "hvac", "mini split", "minisplit",
+        "air source", "ground source", "geothermal", "compressor",
+        "inverter", "heating", "cooling",
+    ],
+    "solar": [
+        "solar", "photovoltaic", "pv", "solar panel", "solar panels",
+        "inverter", "microinverter", "battery", "storage", "microgrid",
+    ],
+    "water heater": [
+        "water heater", "water heaters", "heat pump water heater",
+        "tankless", "hybrid water heater",
+    ],
+    "thermostat": [
+        "thermostat", "thermostats", "smart thermostat",
+        "connected thermostat", "controls",
+    ],
+    "indoor air": [
+        "indoor air", "iaq", "air quality", "ventilation", "erv",
+        "hrv", "humidity", "dehumidifier", "mold", "mildew",
+    ],
+    "appliance": [
+        "appliance", "appliances", "refrigerator", "dishwasher",
+        "range", "oven", "induction", "cooktop",
+    ],
+}
+
+GENERIC_QUERY_TERMS = {
+    "sustainable", "sustainability", "green", "greenest", "best",
+    "better", "most", "material", "materials", "product", "products",
+    "building", "buildings", "home", "homes", "house", "housing",
+    "environmental", "eco", "friendly", "carbon", "energy", "efficient",
+    "efficiency", "cost", "costs", "price", "prices", "compare",
+    "comparison", "which", "what", "how", "why", "tell", "show",
+}
+
+
+def _subject_aliases_for_query(question: str) -> tuple[str, list[str]] | tuple[None, list[str]]:
+    q = (question or "").lower()
+    for subject, aliases in SUBJECT_ALIASES.items():
+        if subject in q or any(alias in q for alias in aliases):
+            return subject, aliases
+    return None, []
+
+
+def _alias_hit_count(aliases: list[str], text: str) -> int:
+    if not aliases or not text:
+        return 0
+    blob = (text or "").lower()
+    tokens = set(tokenize(blob))
+    count = 0
+    for alias in aliases:
+        alias_l = alias.lower().strip()
+        if not alias_l:
+            continue
+        if " " in alias_l or "-" in alias_l:
+            if alias_l in blob:
+                count += 1
+        elif alias_l in tokens:
+            count += 1
+    return count
+
+
+def subject_anchor_bonus(question: str, item: Dict[str, Any]) -> float:
+    """Boost true subject matches and penalize semantic drift.
+
+    This is intentionally conservative: it only activates when the query clearly
+    names a known product/topic family. For example, countertop queries require
+    countertop-related terms somewhere in the chunk/title/URL/source text.
+    """
+    _subject, aliases = _subject_aliases_for_query(question)
+    if not aliases:
+        return 0.0
+
+    title = str(item.get("title", "") or "")
+    url = str(item.get("url", "") or "")
+    attribution = str(item.get("attribution_label", "") or "")
+    text = str(item.get("text", "") or "")
+
+    strong_text = "\n".join([title, url, attribution])
+    all_text = "\n".join([strong_text, text])
+
+    strong_hits = _alias_hit_count(aliases, strong_text)
+    total_hits = _alias_hit_count(aliases, all_text)
+
+    # Hard penalty: do not let broad sustainability/energy semantics dominate
+    # when the actual object named in the query is absent.
+    if total_hits == 0:
+        return -0.42
+
+    bonus = min(total_hits * 0.055, 0.28)
+    bonus += min(strong_hits * 0.08, 0.22)
+    return min(bonus, 0.42)
+
+
+def anchored_keyword_overlap_score(question: str, text: str) -> float:
+    """Keyword overlap that ignores generic sustainability/search words.
+
+    The existing keyword_overlap_score remains available for broad queries.
+    This supplement gives extra weight to the concrete nouns in a query.
+    """
+    q_terms = [t for t in tokenize(question) if t not in GENERIC_QUERY_TERMS]
+    if not q_terms:
+        return 0.0
+    d_terms = set(tokenize(text))
+    if not d_terms:
+        return 0.0
+    hits = sum(1 for t in q_terms if t in d_terms)
+    return hits / max(1, len(q_terms))
+
 
 def tokenize(text: str) -> List[str]:
     return [t.lower() for t in WORD_RE.findall(text)]
@@ -284,20 +428,24 @@ def search(question: str) -> List[Dict[str, Any]]:
         vector_distance = float(item.get("_distance", 0.0))
         semantic_score = 1.0 / (1.0 + vector_distance)
         keyword_score = keyword_overlap_score(question, search_text)
+        anchored_keyword_score = anchored_keyword_overlap_score(question, search_text)
         freshness = recency_boost(item.get("published_at"))
         title_bonus = title_match_bonus(question, item)
         topical_event_bonus = event_bonus(question, item)
         franchise_match = franchise_bonus(question, item)
         magazine_lift = source_type_bonus(question, item)
+        subject_anchor = subject_anchor_bonus(question, item)
 
         final_score = (
-            semantic_score * 0.50
-            + keyword_score * 0.22
-            + freshness * 0.08
+            semantic_score * 0.44
+            + keyword_score * 0.18
+            + anchored_keyword_score * 0.13
+            + freshness * 0.07
             + title_bonus
             + topical_event_bonus
             + franchise_match
             + magazine_lift
+            + subject_anchor
             + _policy_bonus(item)
         )
 
