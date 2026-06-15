@@ -31,7 +31,7 @@
 
   const CHATBOT_TITLE =
     currentScript?.dataset.chatbotTitle ||
-    "COGNITION DeepDive";
+    "GBM DeepThink";
 
   const COGNITION_LOGO_URL =
     currentScript?.dataset.logoUrl ||
@@ -764,8 +764,8 @@
     </span>
 
     <span style="line-height:1.05;">
-      COGNITION<br>
-      <span style="font-weight:700;">DeepDive</span>
+      GBM<br>
+      <span style="font-weight:700;">DeepThink</span>
     </span>
   </div>
 
@@ -775,7 +775,7 @@
         <div class="gbm-mark">
           <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
         </div>
-        <div class="gbm-title">COGNITION DeepDive</div>
+        <div class="gbm-title">GBM DeepThink</div>
       </div>
 
       <button class="gbm-close" aria-label="Close chatbot">
@@ -785,7 +785,7 @@
 
     <div class="gbm-messages">
       <div class="gbm-welcome">
-        Make your query, and tap the power of our exclusive COGNITION SmartData,
+        Make your query, and tap the power of COGNITION SmartData,
         combining new research with 25 years of expertise in sustainable building.
       </div>
     </div>
