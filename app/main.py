@@ -40,6 +40,12 @@ from app.models import (
 )
 from app.retrieval import search
 from app.hot_take_matcher import best_hot_take
+from app.transcript_html import (
+    TRANSCRIPT_HTML_DIR,
+    build_all_transcript_html,
+    build_transcript_html_file,
+    transcript_html_path_for_record,
+)
 
 settings = get_settings()
 
@@ -249,7 +255,9 @@ async def run_youtube_transcript_sync_loop() -> None:
     while True:
         try:
             summary = sync_youtube_transcripts()
+            html_summary = build_all_transcript_html(summary)
             print(f"Scheduled YouTube transcript sync completed: {summary}")
+            print(f"Scheduled transcript HTML build completed: {html_summary}")
         except Exception as exc:
             print(f"Scheduled YouTube transcript sync failed: {exc}")
         await asyncio.sleep(TRANSCRIPT_SYNC_INTERVAL_SECONDS)
@@ -1679,7 +1687,7 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
 
                 transcript_endpoint = ""
                 if video.get("video_id"):
-                    transcript_endpoint = f"/api/youtube-transcript/{video.get('video_id')}"
+                    transcript_endpoint = f"/api/youtube-transcript-html/{video.get('video_id')}"
 
                 enriched["transcript_url"] = transcript_endpoint
                 enriched["transcriptUrl"] = transcript_endpoint
@@ -2660,6 +2668,7 @@ def admin_youtube_status(_: str = Depends(admin_auth)) -> dict:
 @app.post("/api/admin/sync-youtube-transcripts")
 def admin_sync_youtube_transcripts(_: str = Depends(admin_auth)) -> dict:
     result = sync_youtube_transcripts()
+    html_result = build_all_transcript_html(result)
     return {
         "ok": bool(result.get("ok", True)),
         "message": (
@@ -2673,6 +2682,8 @@ def admin_sync_youtube_transcripts(_: str = Depends(admin_auth)) -> dict:
         "failed": result.get("failed", []),
         "cache_file": str(YOUTUBE_TRANSCRIPT_CACHE_FILE),
         "transcript_dir": str(YOUTUBE_TRANSCRIPT_DIR),
+        "html_build": html_result,
+        "html_dir": str(TRANSCRIPT_HTML_DIR),
     }
 
 
@@ -2680,12 +2691,15 @@ def admin_sync_youtube_transcripts(_: str = Depends(admin_auth)) -> dict:
 def admin_youtube_transcript_status(_: str = Depends(admin_auth)) -> dict:
     cache = _load_youtube_transcripts()
     transcript_files = sorted(YOUTUBE_TRANSCRIPT_DIR.glob("*.txt")) if YOUTUBE_TRANSCRIPT_DIR.exists() else []
+    html_files = sorted(TRANSCRIPT_HTML_DIR.glob("*.html")) if TRANSCRIPT_HTML_DIR.exists() else []
     return {
         "ok": True,
         "transcript_dir": str(YOUTUBE_TRANSCRIPT_DIR),
         "cache_file": str(YOUTUBE_TRANSCRIPT_CACHE_FILE),
         "cache_exists": YOUTUBE_TRANSCRIPT_CACHE_FILE.exists(),
         "local_txt_count": len(transcript_files),
+        "html_transcript_count": len(html_files),
+        "html_transcript_dir": str(TRANSCRIPT_HTML_DIR),
         "cached_transcript_count": int(cache.get("count", len(cache.get("transcripts", []) or [])) or 0),
         "drive_folder_id_configured": bool(YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID),
         "drive_credentials_configured": bool(GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON),
@@ -2704,6 +2718,58 @@ def admin_test_youtube_transcript_search(q: str = "heat pump", _: str = Depends(
         "video_count": len(videos),
         "videos": videos,
     }
+
+
+@app.post("/api/admin/build-transcript-html")
+def admin_build_transcript_html(force: bool = False, _: str = Depends(admin_auth)) -> dict:
+    cache = _load_youtube_transcripts()
+    result = build_all_transcript_html(cache, force=force)
+    return {
+        "ok": bool(result.get("ok", True)),
+        "message": result.get("message", "Transcript HTML build finished."),
+        **result,
+    }
+
+
+@app.get("/api/admin/transcript-html-status")
+def admin_transcript_html_status(_: str = Depends(admin_auth)) -> dict:
+    html_files = sorted(TRANSCRIPT_HTML_DIR.glob("*.html")) if TRANSCRIPT_HTML_DIR.exists() else []
+    return {
+        "ok": True,
+        "html_dir": str(TRANSCRIPT_HTML_DIR),
+        "html_transcript_count": len(html_files),
+        "sample": [path.name for path in html_files[:10]],
+    }
+
+
+@app.get("/api/youtube-transcript-html/{video_id}", response_class=HTMLResponse)
+def public_youtube_transcript_html(video_id: str) -> HTMLResponse:
+    """Serve the polished HTML transcript page for a synced YouTube transcript."""
+    clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
+    if not clean_video_id:
+        raise HTTPException(status_code=404, detail="Transcript not found.")
+
+    videos = _load_youtube_videos()
+    video = next(
+        (
+            item for item in videos
+            if str(item.get("video_id", "") or "").strip() == clean_video_id
+        ),
+        {"video_id": clean_video_id, "title": clean_video_id},
+    )
+
+    transcript = _transcript_for_video(video, _load_youtube_transcripts())
+    if not transcript:
+        raise HTTPException(status_code=404, detail="Transcript not found.")
+
+    html_path = transcript_html_path_for_record(transcript)
+    if not html_path.exists():
+        build_transcript_html_file(transcript, force=True)
+
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Transcript HTML not found.")
+
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 @app.get("/api/youtube-transcript/{video_id}")
