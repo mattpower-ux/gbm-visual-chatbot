@@ -2976,6 +2976,265 @@ def admin_test_pdf_cards(q: str = "home electrification", _: str = Depends(admin
     }
 
 
+
+
+# === Public Transcript Library + SEO Discovery Endpoints ===
+def html_escape(value: Any) -> str:
+    """Small local HTML escape helper to avoid adding another import dependency."""
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#x27;")
+    )
+
+
+def _transcript_public_url(video_id: str) -> str:
+    """Return the canonical public URL for a polished transcript page."""
+    clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
+    return f"https://gbm-visual-chatbot.onrender.com/api/youtube-transcript-html/{clean_video_id}"
+
+
+def _transcript_records_for_public_pages() -> list[dict[str, Any]]:
+    """Return transcript records that have enough metadata to be public pages."""
+    cache = _load_youtube_transcripts()
+    transcripts = cache.get("transcripts", []) or []
+
+    cleaned: list[dict[str, Any]] = []
+    seen_video_ids: set[str] = set()
+
+    for record in transcripts:
+        if not isinstance(record, dict):
+            continue
+
+        video_id = str(record.get("video_id", "") or "").strip()
+        if not video_id:
+            continue
+
+        clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id)
+        if not clean_video_id or clean_video_id in seen_video_ids:
+            continue
+
+        seen_video_ids.add(clean_video_id)
+        cleaned.append(record)
+
+    cleaned.sort(
+        key=lambda item: (
+            str(item.get("title", "") or "").lower(),
+            str(item.get("video_id", "") or ""),
+        )
+    )
+    return cleaned
+
+
+@app.get("/transcripts", response_class=HTMLResponse)
+def transcript_library() -> HTMLResponse:
+    """Public transcript library page.
+
+    This creates a normal crawlable HTML path to every transcript page so
+    Google and other search engines can discover the polished transcript HTML.
+    """
+    transcripts = _transcript_records_for_public_pages()
+
+    rows: list[str] = []
+    for record in transcripts:
+        video_id = re.sub(r"[^A-Za-z0-9_-]", "", str(record.get("video_id", "") or ""))
+        if not video_id:
+            continue
+
+        title = str(record.get("title") or "Untitled Transcript").strip()
+        speakers = str(record.get("speakers") or "").strip()
+        preview = _clean_transcript_text(str(record.get("text_preview") or record.get("text") or ""))[:220]
+        published_at = str(record.get("published_at") or "").strip()
+        transcript_url = f"/api/youtube-transcript-html/{video_id}"
+        youtube_url = str(record.get("url") or f"https://www.youtube.com/watch?v={video_id}").strip()
+
+        meta_parts = []
+        if speakers:
+            meta_parts.append(f"Speakers: {html_escape(speakers)}")
+        if published_at:
+            meta_parts.append(f"Published: {html_escape(published_at[:10])}")
+
+        rows.append(
+            f"""
+            <article class="card">
+              <h2><a href="{transcript_url}">{html_escape(title)}</a></h2>
+              <p class="meta">{' | '.join(meta_parts)}</p>
+              <p>{html_escape(preview)}</p>
+              <div class="links">
+                <a href="{transcript_url}">Read full transcript</a>
+                <a href="{html_escape(youtube_url)}" target="_blank" rel="noopener">Watch video</a>
+              </div>
+            </article>
+            """
+        )
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Green Builder Media Video Transcript Library</title>
+  <meta name="description" content="A searchable library of Green Builder Media video transcripts covering sustainable building, housing, energy, resilience, decarbonization, and building science.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://gbm-visual-chatbot.onrender.com/transcripts">
+  <style>
+    :root {{
+      --gbm-blue: #00839a;
+      --gbm-green: #184d42;
+      --text: #172233;
+      --muted: #62707a;
+      --line: #dbe7e4;
+      --bg: #f6f8f7;
+      --card: #ffffff;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }}
+    .wrap {{
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 42px 20px 70px;
+    }}
+    .hero {{
+      background: linear-gradient(135deg, var(--gbm-blue), #0b657b);
+      color: white;
+      border-radius: 28px;
+      padding: 34px;
+      margin-bottom: 24px;
+    }}
+    .eyebrow {{
+      text-transform: uppercase;
+      letter-spacing: .13em;
+      font-size: 12px;
+      font-weight: 900;
+      opacity: .9;
+    }}
+    h1 {{
+      margin: 12px 0 8px;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+    }}
+    .hero p {{
+      max-width: 780px;
+      margin: 0;
+      color: rgba(255,255,255,.9);
+      font-size: 18px;
+    }}
+    .count {{
+      margin: 18px 0 0;
+      font-weight: 900;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }}
+    .card {{
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(18,48,68,.06);
+    }}
+    .card h2 {{
+      margin: 0 0 8px;
+      font-size: 21px;
+      line-height: 1.15;
+    }}
+    a {{
+      color: var(--gbm-blue);
+      font-weight: 850;
+      text-decoration: none;
+    }}
+    a:hover {{ text-decoration: underline; }}
+    .meta {{
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 10px;
+    }}
+    .links {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 12px;
+    }}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div class="eyebrow">Green Builder Media</div>
+      <h1>Video Transcript Library</h1>
+      <p>Polished, searchable transcripts from Green Builder Media videos and conversations about sustainable building, housing, energy, resilience, and decarbonization.</p>
+      <div class="count">{len(rows)} transcript pages available</div>
+    </section>
+    <section class="grid">
+      {''.join(rows)}
+    </section>
+  </main>
+</body>
+</html>"""
+
+    return HTMLResponse(html)
+
+
+@app.get("/transcripts-sitemap.xml")
+def transcript_sitemap() -> Response:
+    """XML sitemap listing all polished transcript pages for search engines."""
+    transcripts = _transcript_records_for_public_pages()
+
+    urls: list[str] = []
+    for record in transcripts:
+        video_id = re.sub(r"[^A-Za-z0-9_-]", "", str(record.get("video_id", "") or ""))
+        if not video_id:
+            continue
+
+        updated_at = str(record.get("updated_at_utc") or record.get("published_at") or "").strip()
+        lastmod = ""
+        if updated_at:
+            lastmod_value = updated_at[:10]
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", lastmod_value):
+                lastmod = f"<lastmod>{lastmod_value}</lastmod>"
+
+        urls.append(
+            f"""
+  <url>
+    <loc>{_transcript_public_url(video_id)}</loc>
+    {lastmod}
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>"""
+        )
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{''.join(urls)}
+</urlset>
+"""
+    return Response(content=xml, media_type="application/xml; charset=utf-8")
+
+
+@app.get("/robots.txt")
+def robots_txt() -> Response:
+    """Tell crawlers that transcript pages are allowed and where the sitemap lives."""
+    body = """User-agent: *
+Allow: /
+
+Sitemap: https://gbm-visual-chatbot.onrender.com/transcripts-sitemap.xml
+"""
+    return Response(content=body, media_type="text/plain; charset=utf-8")
+
+
+
 @app.get("/")
 def root() -> Response:
     return Response(
