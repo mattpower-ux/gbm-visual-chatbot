@@ -16,3 +16,7 @@ services:
         value: https://www.greenbuildermedia.com
       - key: SITEMAP_URL
         value: https://www.greenbuildermedia.com/sitemap.xml
+      - key: ENABLE_TRANSCRIPT_AUTO_SYNC
+        value: true
+      - key: TRANSCRIPT_SYNC_INTERVAL_SECONDS
+        value: "604800"
