@@ -44,6 +44,13 @@
     currentScript?.dataset.hotTakeImage ||
     "https://www.greenbuildermedia.com/hubfs/Cognition%20DeepDive%20Images/cognition%20button.png";
 
+  // COGNITION VISUAL MODULE TEMPORARILY DISABLED
+  // ------------------------------------------------------------
+  // This disables the featured COGNITION/Hot Take panel in the public widget
+  // without deleting the renderer. To reactivate later, change this to true
+  // or wire it to a backend/widget setting.
+  const ENABLE_COGNITION_VISUAL_MODULE = false;
+
   const root = document.createElement("div");
   document.body.appendChild(root);
 
@@ -1112,6 +1119,14 @@
   }
 
   function renderHotTake(payload, articles) {
+    // COGNITION VISUAL MODULE TEMPORARILY DISABLED
+    // ------------------------------------------------------------
+    // Return an empty string so responses flow directly from the answer into
+    // the article/PDF/video/podcast cards. To reactivate later, set
+    // ENABLE_COGNITION_VISUAL_MODULE to true above and make sure the backend
+    // returns a non-null `hot_take` payload.
+    if (!ENABLE_COGNITION_VISUAL_MODULE) return "";
+
     const hot = payload.hot_take || payload.hotTake || payload.cognition_hot_take || {};
     const hasHotObject = hot && Object.keys(hot).length > 0;
     const articleFallback = firstUsableArticle(articles);
