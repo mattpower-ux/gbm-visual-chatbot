@@ -55,6 +55,20 @@ COGNITION_SYNC_STATUS = {
     "message": "Not yet run",
 }
 
+# COGNITION VISUAL MODULE TEMPORARILY DISABLED
+# ------------------------------------------------------------
+# Keep all COGNITION ingestion, image-serving, admin sync, and matching code in
+# place. The visual chatbot should simply stop attaching the featured
+# COGNITION/Hot Take module to chat responses for now.
+#
+# To reactivate later, set this Render environment variable:
+#   ENABLE_COGNITION_VISUAL_MODULE=true
+# and redeploy/restart the service.
+COGNITION_VISUAL_MODULE_ENABLED = os.getenv(
+    "ENABLE_COGNITION_VISUAL_MODULE",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
+
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
 
@@ -2142,13 +2156,23 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
     videos = search_youtube_videos(question, limit=2) if question else []
     podcasts = search_podcasts(question, limit=2) if question else []
 
-    try:
-        hot_take = find_best_cognition_insight(question) if question else None
-        if not hot_take:
-            hot_take = best_hot_take(question) if question else None
-    except Exception as exc:
-        print(f"COGNITION / Hot Take matching failed: {exc}")
-        hot_take = None
+    # COGNITION VISUAL MODULE TEMPORARILY DISABLED
+    # ------------------------------------------------------------
+    # Keep the COGNITION/Hot Take backend code above intact so it can be
+    # reactivated later without rebuilding the feature. For now, the public
+    # visual chatbot should go directly from the answer to the supporting
+    # article/PDF/video/podcast cards.
+    #
+    # To reactivate later, set ENABLE_COGNITION_VISUAL_MODULE=true in Render.
+    hot_take = None
+    if COGNITION_VISUAL_MODULE_ENABLED:
+        try:
+            hot_take = find_best_cognition_insight(question) if question else None
+            if not hot_take:
+                hot_take = best_hot_take(question) if question else None
+        except Exception as exc:
+            print(f"COGNITION / Hot Take matching failed: {exc}")
+            hot_take = None
 
     base.update(
         {
