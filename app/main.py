@@ -93,13 +93,15 @@ CHAT_RESPONSE_CACHE_TTL_SECONDS = int(
 CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS = int(
     os.getenv("CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS", str(60 * 60 * 6))
 )
-CHAT_CACHE_SCHEMA_VERSION = "v1"
+CHAT_CACHE_SCHEMA_VERSION = "v2"
 CHAT_TEMPORAL_CACHE_TERMS = {
     "latest", "current", "today", "tonight", "tomorrow", "yesterday",
     "this week", "this month", "this year", "upcoming", "coming up",
     "next event", "next conference", "schedule", "calendar", "register",
     "registration", "2026", "2027",
 }
+_MAGAZINE_CARD_ROWS_CACHE_KEY: str | None = None
+_MAGAZINE_CARD_ROWS_CACHE: list[dict[str, Any]] | None = None
 
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
@@ -2070,27 +2072,41 @@ def _magazine_card_from_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _direct_lancedb_magazine_card_search(question: str, limit: int = 2) -> list[dict[str, Any]]:
-    """Fallback: scan indexed magazine chunks directly when normal retrieval misses PDFs."""
+def _load_magazine_card_rows() -> list[dict[str, Any]]:
+    """Load magazine chunks once per index version for cheap lexical card search."""
+    global _MAGAZINE_CARD_ROWS_CACHE_KEY, _MAGAZINE_CARD_ROWS_CACHE
+
+    cache_key = _chat_cache_namespace()
+    if _MAGAZINE_CARD_ROWS_CACHE_KEY == cache_key and _MAGAZINE_CARD_ROWS_CACHE is not None:
+        return _MAGAZINE_CARD_ROWS_CACHE
+
     try:
         import lancedb
 
-        db = lancedb.connect("/data/lancedb")
+        db = lancedb.connect(str(get_settings().lancedb_dir))
         table = db.open_table("greenbuilder_chunks")
         df = table.to_pandas()
     except Exception as exc:
-        print(f"Direct magazine card scan failed: {exc}")
+        print(f"Magazine card row cache load failed: {exc}")
         return []
 
     if df is None or len(df) == 0:
+        _MAGAZINE_CARD_ROWS_CACHE_KEY = cache_key
+        _MAGAZINE_CARD_ROWS_CACHE = []
         return []
 
-    chunks = df.to_dict(orient="records")
+    rows = df.to_dict(orient="records")
+    magazines = [row for row in rows if _is_magazine_chunk(row)]
+    _MAGAZINE_CARD_ROWS_CACHE_KEY = cache_key
+    _MAGAZINE_CARD_ROWS_CACHE = magazines
+    return magazines
+
+
+def _direct_lancedb_magazine_card_search(question: str, limit: int = 2) -> list[dict[str, Any]]:
+    """Fallback: scan indexed magazine chunks directly when normal retrieval misses PDFs."""
     scored: list[tuple[float, dict[str, Any]]] = []
 
-    for chunk in chunks:
-        if not _is_magazine_chunk(chunk):
-            continue
+    for chunk in _load_magazine_card_rows():
         score = _score_magazine_chunk_for_query(chunk, question)
         if score > 0:
             scored.append((score, chunk))
@@ -2310,7 +2326,16 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
 
     # Reuse answer retrieval results for PDF cards. Avoid a second embedding
     # request and LanceDB search on the critical chat path.
-    extra_magazines = search_magazine_pdf_cards(question, limit=2, chunks=chunks) if question else []
+    extra_magazines = (
+        search_magazine_pdf_cards(
+            question,
+            limit=2,
+            chunks=chunks,
+            allow_expensive_fallback=True,
+        )
+        if question
+        else []
+    )
     magazine_urls = {str(m.get("url", "")) for m in magazines}
     for magazine in extra_magazines:
         url = str(magazine.get("url", ""))
