@@ -1087,7 +1087,7 @@
       <div class="gbm-card">
         <div class="gbm-card-media">
           ${
-            type === "video" && transcriptUrl(item)
+            (type === "video" || type === "podcast") && transcriptUrl(item)
               ? `
                 <a
                   class="gbm-transcript-btn"

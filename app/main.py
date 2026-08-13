@@ -137,6 +137,7 @@ YOUTUBE_MAX_SYNC_RESULTS = int(os.getenv("YOUTUBE_MAX_SYNC_RESULTS", "250"))
 YOUTUBE_TRANSCRIPT_DIR = Path(os.getenv("YOUTUBE_TRANSCRIPT_DIR", "/data/youtube_transcripts"))
 YOUTUBE_TRANSCRIPT_CACHE_FILE = Path(os.getenv("YOUTUBE_TRANSCRIPT_CACHE_FILE", "/data/youtube_transcripts.json"))
 YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID = os.getenv("YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID", "1hXT7nfA0whFuo43oFl_tspgwKbtI0eaz").strip()
+PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID = os.getenv("PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID", "10yr6ZpJYdp_9mqQzgeiqw5vFOLs96Hja").strip()
 GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "").strip()
 ENABLE_TRANSCRIPT_AUTO_SYNC = os.getenv("ENABLE_TRANSCRIPT_AUTO_SYNC", "false").strip().lower() in {
     "1", "true", "yes", "on",
@@ -1395,14 +1396,24 @@ def _download_drive_transcripts() -> dict[str, Any]:
 
     Requires:
     - GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON
-    - YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID
+    - YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID and/or PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID
 
-    The Drive folder must be shared with the service account email.
+    The Drive folders must be shared with the service account email.
     """
-    if not GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON or not YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID:
+    folder_ids = [
+        folder_id
+        for folder_id in (
+            YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID,
+            PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID,
+        )
+        if folder_id
+    ]
+    folder_ids = list(dict.fromkeys(folder_ids))
+
+    if not GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON or not folder_ids:
         return {
             "ok": False,
-            "message": "Google Drive transcript sync skipped because Drive credentials or folder ID are missing.",
+            "message": "Google Drive transcript sync skipped because Drive credentials or transcript folder IDs are missing.",
             "downloaded": [],
             "skipped": [],
         }
@@ -1431,28 +1442,36 @@ def _download_drive_transcripts() -> dict[str, Any]:
         )
         service = build("drive", "v3", credentials=credentials)
 
-        query = (
-            f"'{YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID}' in parents "
-            "and trashed = false "
-            "and mimeType != 'application/vnd.google-apps.folder'"
-        )
-
         files: list[dict[str, Any]] = []
-        page_token = None
+        seen_file_ids: set[str] = set()
 
-        while True:
-            response = service.files().list(
-                q=query,
-                spaces="drive",
-                fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
-                pageToken=page_token,
-                pageSize=1000,
-            ).execute()
+        for folder_id in folder_ids:
+            query = (
+                f"'{folder_id}' in parents "
+                "and trashed = false "
+                "and mimeType != 'application/vnd.google-apps.folder'"
+            )
+            page_token = None
 
-            files.extend(response.get("files", []))
-            page_token = response.get("nextPageToken")
-            if not page_token:
-                break
+            while True:
+                response = service.files().list(
+                    q=query,
+                    spaces="drive",
+                    fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+                    pageToken=page_token,
+                    pageSize=1000,
+                ).execute()
+
+                for file_item in response.get("files", []):
+                    file_id = str(file_item.get("id") or "")
+                    if file_id and file_id not in seen_file_ids:
+                        seen_file_ids.add(file_id)
+                        file_item["transcript_folder_id"] = folder_id
+                        files.append(file_item)
+
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
 
         YOUTUBE_TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1501,10 +1520,12 @@ def _download_drive_transcripts() -> dict[str, Any]:
 
         return {
             "ok": True,
-            "message": f"Drive transcript sync checked {len(files)} file(s); downloaded {len(downloaded)} new .txt file(s).",
+            "message": f"Drive transcript sync checked {len(files)} file(s) across {len(folder_ids)} folder(s); downloaded {len(downloaded)} new .txt file(s).",
             "downloaded": downloaded,
             "skipped": skipped[:100],
             "drive_file_count": len(files),
+            "drive_folder_count": len(folder_ids),
+            "drive_folder_ids": folder_ids,
         }
 
     except Exception as exc:
@@ -1602,6 +1623,36 @@ def _transcript_for_video(video: dict[str, Any], transcript_cache: dict[str, Any
                 return record
 
     return None
+
+
+def _enrich_media_item_with_transcript(
+    media_item: dict[str, Any],
+    transcript_cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    enriched = dict(media_item)
+    transcript = _transcript_for_video(enriched, transcript_cache)
+
+    if not transcript:
+        enriched["has_transcript"] = False
+        enriched["transcript_url"] = ""
+        enriched["transcriptUrl"] = ""
+        return enriched
+
+    transcript_preview = str(transcript.get("text_preview", "") or "")
+    enriched["has_transcript"] = True
+    enriched["transcript_file"] = transcript.get("filename", "")
+    enriched["transcript_excerpt"] = transcript_preview[:240]
+    enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
+
+    transcript_endpoint = ""
+    if enriched.get("video_id"):
+        transcript_endpoint = f"/api/youtube-transcript-html/{enriched.get('video_id')}"
+
+    enriched["transcript_url"] = transcript_endpoint
+    enriched["transcriptUrl"] = transcript_endpoint
+    enriched["drive_transcript_url"] = transcript_endpoint
+    enriched["google_drive_transcript"] = transcript_endpoint
+    return enriched
 
 
 def sync_youtube_videos() -> list[dict[str, Any]]:
@@ -1832,26 +1883,7 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
             score += min(subject_hits * 5.0, 15.0)
 
         if score > 0:
-            enriched = dict(video)
-            if transcript:
-                enriched["has_transcript"] = True
-                enriched["transcript_file"] = transcript.get("filename", "")
-                enriched["transcript_excerpt"] = transcript_preview[:240]
-                enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
-
-                transcript_endpoint = ""
-                if video.get("video_id"):
-                    transcript_endpoint = f"/api/youtube-transcript-html/{video.get('video_id')}"
-
-                enriched["transcript_url"] = transcript_endpoint
-                enriched["transcriptUrl"] = transcript_endpoint
-                enriched["drive_transcript_url"] = transcript_endpoint
-                enriched["google_drive_transcript"] = transcript_endpoint
-            else:
-                enriched["has_transcript"] = False
-                enriched["transcript_url"] = ""
-                enriched["transcriptUrl"] = ""
-            scored.append((score, enriched))
+            scored.append((score, _enrich_media_item_with_transcript(video, transcript_cache)))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     return [dict(video) for _, video in scored[:limit]]
@@ -1966,21 +1998,27 @@ def search_podcasts(query: str, limit: int = 2) -> list[dict[str, Any]]:
     if not query_terms:
         return []
 
+    transcript_cache = _load_youtube_transcripts()
     scored: list[tuple[float, dict[str, Any]]] = []
 
     for podcast in podcasts:
         title = str(podcast.get("title", ""))
         description = str(podcast.get("description", ""))
-        haystack = f"{title} {description}".lower()
+        transcript = _transcript_for_video(podcast, transcript_cache)
+        transcript_text = str(transcript.get("text", "") if transcript else "")
+        haystack = f"{title} {description} {transcript_text}".lower()
         title_lower = title.lower()
+        transcript_lower = transcript_text.lower()
 
         score = 0.0
 
         for term in query_terms:
             if term in title_lower:
                 score += 4.0
-            if term in haystack:
+            if term in description.lower():
                 score += 1.0
+            if term in transcript_lower:
+                score += 2.5
 
         q_lower = (query or "").lower()
         for phrase in (
@@ -1989,9 +2027,11 @@ def search_podcasts(query: str, limit: int = 2) -> list[dict[str, Any]]:
         ):
             if phrase in q_lower and phrase in haystack:
                 score += 6.0
+            if transcript and phrase in q_lower and phrase in transcript_lower:
+                score += 4.0
 
         if score > 0:
-            scored.append((score, podcast))
+            scored.append((score, _enrich_media_item_with_transcript(podcast, transcript_cache)))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     return [dict(podcast) for _, podcast in scored[:limit]]
@@ -2898,7 +2938,9 @@ def admin_youtube_transcript_status(_: str = Depends(admin_auth)) -> dict:
         "html_transcript_count": len(html_files),
         "html_transcript_dir": str(TRANSCRIPT_HTML_DIR),
         "cached_transcript_count": int(cache.get("count", len(cache.get("transcripts", []) or [])) or 0),
-        "drive_folder_id_configured": bool(YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID),
+        "drive_folder_id_configured": bool(YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID or PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID),
+        "youtube_transcript_drive_folder_id_configured": bool(YOUTUBE_TRANSCRIPT_DRIVE_FOLDER_ID),
+        "podcast_transcript_drive_folder_id_configured": bool(PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID),
         "drive_credentials_configured": bool(GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON),
         "auto_sync_enabled": ENABLE_TRANSCRIPT_AUTO_SYNC,
         "sync_interval_seconds": TRANSCRIPT_SYNC_INTERVAL_SECONDS,
@@ -2941,15 +2983,15 @@ def admin_transcript_html_status(_: str = Depends(admin_auth)) -> dict:
 
 @app.get("/api/youtube-transcript-html/{video_id}", response_class=HTMLResponse)
 def public_youtube_transcript_html(video_id: str) -> HTMLResponse:
-    """Serve the polished HTML transcript page for a synced YouTube transcript."""
+    """Serve the polished HTML transcript page for a synced YouTube or podcast transcript."""
     clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
     if not clean_video_id:
         raise HTTPException(status_code=404, detail="Transcript not found.")
 
-    videos = _load_youtube_videos()
+    media_items = _load_youtube_videos() + _load_podcast_videos()
     video = next(
         (
-            item for item in videos
+            item for item in media_items
             if str(item.get("video_id", "") or "").strip() == clean_video_id
         ),
         {"video_id": clean_video_id, "title": clean_video_id},
@@ -2971,20 +3013,20 @@ def public_youtube_transcript_html(video_id: str) -> HTMLResponse:
 
 @app.get("/api/youtube-transcript/{video_id}")
 def public_youtube_transcript(video_id: str) -> Response:
-    """Serve a synced YouTube transcript as plain text for the visual chatbot.
+    """Serve a synced YouTube or podcast transcript as plain text for the visual chatbot.
 
     This endpoint is public because the transcript button appears on public
-    YouTube result cards. It only returns a transcript when the video has a
+    video and podcast result cards. It only returns a transcript when the media has a
     matching synced .txt transcript in the transcript cache.
     """
     clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
     if not clean_video_id:
         raise HTTPException(status_code=404, detail="Transcript not found.")
 
-    videos = _load_youtube_videos()
+    media_items = _load_youtube_videos() + _load_podcast_videos()
     video = next(
         (
-            item for item in videos
+            item for item in media_items
             if str(item.get("video_id", "") or "").strip() == clean_video_id
         ),
         {"video_id": clean_video_id, "title": clean_video_id},
