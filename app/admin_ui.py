@@ -82,7 +82,7 @@ HTML = r"""
     <button id="check-rebuild-status-btn" class="header-btn secondary">Check Status</button>
     <button id="sync-hot-takes-btn" class="header-btn secondary">Sync Hot Takes</button>
     <button id="sync-cognition-btn" class="header-btn secondary">Sync Cognition Drive</button>
-    <button id="sync-youtube-transcripts-btn" class="header-btn secondary">UPDATE YT TRANSCRIPTS</button>
+    <button id="sync-youtube-transcripts-btn" class="header-btn secondary">UPDATE TRANSCRIPTS</button>
     <span id="rebuild-status">Index status: idle</span>
   </div>
 </header>
@@ -418,10 +418,10 @@ async function syncYouTubeTranscripts() {
 
   if (statusEl) {
     statusEl.style.display = "block";
-    statusEl.textContent = "Updating YouTube transcripts from Google Drive...";
+    statusEl.textContent = "Updating video and podcast transcripts from Google Drive...";
   }
   if (headerStatusEl) {
-    headerStatusEl.textContent = "Updating YT transcripts...";
+    headerStatusEl.textContent = "Updating transcripts...";
   }
 
   try {
@@ -430,9 +430,9 @@ async function syncYouTubeTranscripts() {
     });
 
     if (!res.ok || data.ok === false) {
-      const message = "YouTube transcript update failed: " + (data.error || data.detail || data.message || rawText.slice(0, 300) || "Unknown error");
+      const message = "Transcript update failed: " + (data.error || data.detail || data.message || rawText.slice(0, 300) || "Unknown error");
       if (statusEl) statusEl.textContent = message;
-      if (headerStatusEl) headerStatusEl.textContent = "YT transcript update failed.";
+      if (headerStatusEl) headerStatusEl.textContent = "Transcript update failed.";
       return;
     }
 
@@ -444,14 +444,14 @@ async function syncYouTubeTranscripts() {
 
     const message = data.message || (details.length ? `YouTube transcripts updated: ${details.join(" · ")}` : "YouTube transcripts updated successfully.");
     if (statusEl) statusEl.textContent = message;
-    if (headerStatusEl) headerStatusEl.textContent = "YT transcript update complete.";
+    if (headerStatusEl) headerStatusEl.textContent = "Transcript update complete.";
   } catch (err) {
-    const message = "YouTube transcript update error: " + err.message;
+    const message = "Transcript update error: " + err.message;
     if (statusEl) {
       statusEl.style.display = "block";
       statusEl.textContent = message;
     }
-    if (headerStatusEl) headerStatusEl.textContent = "YT transcript update error.";
+    if (headerStatusEl) headerStatusEl.textContent = "Transcript update error.";
   }
 }
 

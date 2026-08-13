@@ -2909,7 +2909,7 @@ def admin_sync_youtube_transcripts(_: str = Depends(admin_auth)) -> dict:
     return {
         "ok": bool(result.get("ok", True)),
         "message": (
-            f"YouTube transcripts synced. "
+            f"Video and podcast transcripts synced. "
             f"{result.get('count', 0)} transcript file(s) available."
         ),
         "transcript_count": result.get("count", 0),
