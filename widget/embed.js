@@ -200,10 +200,11 @@
       position: fixed;
       top: 24px;
       bottom: auto;
-      right: 24px;
-      left: auto;
+      right: auto;
+      left: 50%;
       width: min(950px, calc(100vw - 80px));
       max-height: calc(100vh - 48px);
+      transform: translateX(-50%);
       z-index: 999998;
       background: #f5f8f7;
       border-radius: 18px;
@@ -214,6 +215,25 @@
       border: 1px solid rgba(0,0,0,.08);
       font-family: Arial, sans-serif;
       color: #1f2937;
+    }
+
+    .gbm-panel-compact {
+      top: 50%;
+      left: 50%;
+      right: auto;
+      width: min(560px, calc(100vw - 32px));
+      max-height: none;
+      transform: translate(-50%, -50%);
+      border-radius: 18px;
+    }
+
+    .gbm-panel-compact .gbm-messages {
+      display: none;
+    }
+
+    .gbm-panel-compact .gbm-inputbar {
+      border-top: 0;
+      padding: 18px;
     }
 
     .gbm-header {
@@ -768,7 +788,19 @@
         inset: 0;
         width: auto;
         max-height: none;
+        transform: none;
         border-radius: 0;
+      }
+
+      .gbm-panel-compact {
+        inset: auto;
+        top: 50%;
+        left: 50%;
+        right: auto;
+        width: min(520px, calc(100vw - 24px));
+        max-height: calc(100vh - 24px);
+        transform: translate(-50%, -50%);
+        border-radius: 18px;
       }
 
       .gbm-messages {
@@ -842,6 +874,7 @@
 
   launcher.onclick = () => {
     launcher.style.display = "none";
+    panel.classList.add("gbm-panel-compact");
     panel.style.display = "flex";
     input.focus();
   };
@@ -1507,6 +1540,7 @@
     requestInFlight = true;
     sendBtn.disabled = true;
     sendBtn.textContent = "ASKING";
+    panel.classList.remove("gbm-panel-compact");
 
     messages.innerHTML = `
       ${renderQuestion(question)}
