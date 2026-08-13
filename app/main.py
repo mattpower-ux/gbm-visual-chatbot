@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -74,6 +75,31 @@ COGNITION_VISUAL_MODULE_ENABLED = os.getenv(
     "ENABLE_COGNITION_VISUAL_MODULE",
     "false",
 ).strip().lower() in {"1", "true", "yes", "on"}
+
+# === Chat Response Cache ===
+CHAT_RESPONSE_CACHE_ENABLED = os.getenv(
+    "CHAT_RESPONSE_CACHE_ENABLED",
+    "true",
+).strip().lower() in {"1", "true", "yes", "on"}
+CHAT_RESPONSE_CACHE_DIR = Path(
+    os.getenv(
+        "CHAT_RESPONSE_CACHE_DIR",
+        str(settings.data_dir / "chat_response_cache"),
+    )
+)
+CHAT_RESPONSE_CACHE_TTL_SECONDS = int(
+    os.getenv("CHAT_RESPONSE_CACHE_TTL_SECONDS", str(60 * 60 * 24 * 120))
+)
+CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS = int(
+    os.getenv("CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS", str(60 * 60 * 6))
+)
+CHAT_CACHE_SCHEMA_VERSION = "v1"
+CHAT_TEMPORAL_CACHE_TERMS = {
+    "latest", "current", "today", "tonight", "tomorrow", "yesterday",
+    "this week", "this month", "this year", "upcoming", "coming up",
+    "next event", "next conference", "schedule", "calendar", "register",
+    "registration", "2026", "2027",
+}
 
 app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
 security = HTTPBasic()
@@ -224,6 +250,141 @@ def append_log_everywhere(payload: dict) -> None:
         log_to_google_sheet(payload)
     except Exception as exc:
         print(f"Google Sheets logging failed: {exc}")
+
+
+def append_log_local_then_sheet(payload: dict) -> None:
+    """Persist the local audit log quickly, then mirror to Sheets."""
+    append_log(payload)
+    try:
+        log_to_google_sheet(payload)
+    except Exception as exc:
+        print(f"Google Sheets logging failed: {exc}")
+
+
+def queue_chat_log(background_tasks: BackgroundTasks, payload: dict) -> None:
+    """Keep external logging out of the user-facing response path."""
+    background_tasks.add_task(append_log_local_then_sheet, payload)
+
+
+def _normalize_cache_question(question: str) -> str:
+    return re.sub(r"\s+", " ", (question or "").strip().lower())
+
+
+def _chat_cache_ttl_seconds(question: str) -> int:
+    q = _normalize_cache_question(question)
+    if is_future_event_query(question) or any(term in q for term in CHAT_TEMPORAL_CACHE_TERMS):
+        return CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS
+    return CHAT_RESPONSE_CACHE_TTL_SECONDS
+
+
+def _chat_cache_namespace() -> str:
+    """Include content/model knobs that should invalidate cached answers."""
+    settings = get_settings()
+    index_version = "no-index"
+    versions_dir = settings.lancedb_dir / "greenbuilder_chunks.lance" / "_versions"
+    try:
+        manifests = list(versions_dir.glob("*.manifest"))
+        if manifests:
+            latest = max(manifests, key=lambda path: path.stat().st_mtime)
+            index_version = f"{latest.name}:{int(latest.stat().st_mtime)}"
+    except Exception:
+        index_version = "unknown-index"
+
+    return "|".join(
+        [
+            CHAT_CACHE_SCHEMA_VERSION,
+            settings.openai_chat_model,
+            settings.openai_embedding_model,
+            str(settings.max_context_chunks),
+            index_version,
+        ]
+    )
+
+
+def _chat_cache_key(question: str) -> str:
+    raw = f"{_chat_cache_namespace()}|{_normalize_cache_question(question)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _chat_cache_path(cache_key: str) -> Path:
+    return CHAT_RESPONSE_CACHE_DIR / f"{cache_key}.json"
+
+
+def _read_chat_cache(cache_key: str, question: str) -> dict[str, Any] | None:
+    if not CHAT_RESPONSE_CACHE_ENABLED:
+        return None
+
+    path = _chat_cache_path(cache_key)
+    try:
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        created_at = float(payload.get("created_at", 0) or 0)
+        if time.time() - created_at > _chat_cache_ttl_seconds(question):
+            return None
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            return None
+        return response if _is_public_cacheable_chat_payload(response) else None
+    except Exception as exc:
+        print(f"Chat response cache read failed: {exc}")
+        return None
+
+
+def _write_chat_cache(cache_key: str, question: str, response: dict[str, Any]) -> None:
+    if not CHAT_RESPONSE_CACHE_ENABLED:
+        return
+    if not _is_public_cacheable_chat_payload(response):
+        return
+
+    try:
+        CHAT_RESPONSE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "created_at": time.time(),
+            "ttl_seconds": _chat_cache_ttl_seconds(question),
+            "namespace": _chat_cache_namespace(),
+            "question": _normalize_cache_question(question),
+            "response": response,
+        }
+        tmp_path = _chat_cache_path(cache_key).with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(_chat_cache_path(cache_key))
+    except Exception as exc:
+        print(f"Chat response cache write failed: {exc}")
+
+
+def _is_public_cacheable_chat_payload(response: dict[str, Any]) -> bool:
+    """Only cache answers that are safe to reuse across anonymous users."""
+    if response.get("private_archive_used"):
+        return False
+    if response.get("attribution_note"):
+        return False
+
+    for source in response.get("sources", []) or []:
+        if not isinstance(source, dict):
+            return False
+        if source.get("visibility", "public") != "public":
+            return False
+        if source.get("surface_policy") in {"paraphrase", "weight_only", "blocked"}:
+            return False
+
+    return True
+
+
+def _cached_chat_log_payload(req: ChatRequest, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "question": req.question,
+        "session_id": req.session_id,
+        "page_url": req.page_url,
+        "referrer": req.referrer,
+        "user_agent": req.user_agent,
+        "event_query": is_future_event_query(req.question),
+        "answer": payload.get("answer", "") or "",
+        "public_sources": payload.get("sources", []) or [],
+        "private_archive_used": bool(payload.get("private_archive_used", False)),
+        "attribution_note": payload.get("attribution_note"),
+        "cache_hit": True,
+    }
 
 
 async def run_crawl_and_reindex_once() -> None:
@@ -1526,16 +1687,13 @@ def sync_youtube_videos() -> list[dict[str, Any]]:
 
 
 def _load_youtube_videos() -> list[dict[str, Any]]:
-    """Load cached YouTube videos; refresh if missing or stale."""
+    """Load cached YouTube videos without refreshing during chat requests."""
     try:
         if YOUTUBE_CACHE_FILE.exists():
-            age = time.time() - YOUTUBE_CACHE_FILE.stat().st_mtime
-            if age <= YOUTUBE_CACHE_MAX_AGE_SECONDS:
-                return json.loads(YOUTUBE_CACHE_FILE.read_text(encoding="utf-8"))
-
-        return sync_youtube_videos()
+            return json.loads(YOUTUBE_CACHE_FILE.read_text(encoding="utf-8"))
+        return []
     except Exception as exc:
-        print(f"YouTube video cache load/sync failed: {exc}")
+        print(f"YouTube video cache load failed: {exc}")
         if YOUTUBE_CACHE_FILE.exists():
             try:
                 return json.loads(YOUTUBE_CACHE_FILE.read_text(encoding="utf-8"))
@@ -1671,12 +1829,6 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
                 continue
             score += min(subject_hits * 5.0, 15.0)
 
-        subject_hits = _visual_subject_hit_count(query, haystack)
-        if _visual_subject_required(query):
-            if subject_hits == 0:
-                continue
-            score += min(subject_hits * 5.0, 15.0)
-
         if score > 0:
             enriched = dict(video)
             if transcript:
@@ -1787,14 +1939,13 @@ def sync_podcast_videos() -> list[dict[str, Any]]:
 
 
 def _load_podcast_videos() -> list[dict[str, Any]]:
-    """Load cached podcast videos; sync from YouTube playlist if missing."""
+    """Load cached podcast videos without refreshing during chat requests."""
     try:
         if PODCAST_CACHE_FILE.exists():
             return json.loads(PODCAST_CACHE_FILE.read_text(encoding="utf-8"))
-
-        return sync_podcast_videos()
+        return []
     except Exception as exc:
-        print(f"Podcast cache load/sync failed: {exc}")
+        print(f"Podcast cache load failed: {exc}")
         if PODCAST_CACHE_FILE.exists():
             try:
                 return json.loads(PODCAST_CACHE_FILE.read_text(encoding="utf-8"))
@@ -1964,25 +2115,34 @@ def _direct_lancedb_magazine_card_search(question: str, limit: int = 2) -> list[
     return cards
 
 
-def search_magazine_pdf_cards(question: str, limit: int = 2) -> list[dict[str, Any]]:
+def search_magazine_pdf_cards(
+    question: str,
+    limit: int = 2,
+    chunks: list[dict[str, Any]] | None = None,
+    allow_expensive_fallback: bool = False,
+) -> list[dict[str, Any]]:
     """Dedicated magazine/PDF retrieval pass for visual cards.
 
-    This does not change answer generation. It only ensures the visual UI can
-    surface relevant magazine/PDF resources even when blogs or webpages dominate
-    the main answer context.
+    This does not change answer generation. During chat, prefer the chunks that
+    were already retrieved for the answer so visual cards do not trigger another
+    embedding request and LanceDB search. Admin/testing callers can opt into the
+    expensive fallback when they need broader PDF discovery.
     """
     if not question:
         return []
 
-    try:
+    more_chunks = list(chunks or [])
+
+    if not more_chunks and allow_expensive_fallback:
         try:
-            more_chunks = search(question, limit=24)
-        except TypeError:
-            more_chunks = search(question)
-        more_chunks = _apply_smart_ranking(more_chunks, question)
-    except Exception as exc:
-        print(f"PDF card search failed: {exc}")
-        more_chunks = []
+            try:
+                more_chunks = search(question, limit=24)
+            except TypeError:
+                more_chunks = search(question)
+            more_chunks = _apply_smart_ranking(more_chunks, question)
+        except Exception as exc:
+            print(f"PDF card search failed: {exc}")
+            more_chunks = []
 
     pdf_cards: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -2020,7 +2180,7 @@ def search_magazine_pdf_cards(question: str, limit: int = 2) -> list[dict[str, A
             break
 
     # If semantic retrieval did not surface PDFs, scan indexed magazine chunks directly.
-    if len(pdf_cards) < limit:
+    if len(pdf_cards) < limit and allow_expensive_fallback:
         for card in _direct_lancedb_magazine_card_search(question, limit=limit):
             card_url = str(card.get("url", ""))
             if not card_url or card_url in seen_urls:
@@ -2030,7 +2190,6 @@ def search_magazine_pdf_cards(question: str, limit: int = 2) -> list[dict[str, A
             if len(pdf_cards) >= limit:
                 break
 
-    print(f"Magazine cards found: {len(pdf_cards)}")
     return pdf_cards
 
 def _build_key_insights(answer: str) -> list[dict[str, str]]:
@@ -2149,10 +2308,9 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
     sources = base.get("sources", []) or []
     cards, magazines = _build_visual_cards(sources, chunks)
 
-    # Force a separate PDF/magazine card pass for the visual UI.
-    # This prevents broad queries from losing PDF cards when articles dominate
-    # the main answer/source ranking.
-    extra_magazines = search_magazine_pdf_cards(question, limit=2) if question else []
+    # Reuse answer retrieval results for PDF cards. Avoid a second embedding
+    # request and LanceDB search on the critical chat path.
+    extra_magazines = search_magazine_pdf_cards(question, limit=2, chunks=chunks) if question else []
     magazine_urls = {str(m.get("url", "")) for m in magazines}
     for magazine in extra_magazines:
         url = str(magazine.get("url", ""))
@@ -2199,7 +2357,7 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
 
 
 @app.post("/chat")
-def chat(req: ChatRequest) -> dict[str, Any]:
+def chat(req: ChatRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     correction = find_correction(req.question)
     if correction:
         response = ChatResponse(
@@ -2209,7 +2367,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             correction_note=correction.get("editor_note")
             or f"Editor override by {correction.get('editor_name') or 'editor'}",
         )
-        append_log_everywhere(
+        queue_chat_log(
+            background_tasks,
             {
                 "question": req.question,
                 "session_id": req.session_id,
@@ -2226,6 +2385,12 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         )
         return _chat_payload(response, question=req.question)
 
+    cache_key = _chat_cache_key(req.question)
+    cached_payload = _read_chat_cache(cache_key, req.question)
+    if cached_payload is not None:
+        queue_chat_log(background_tasks, _cached_chat_log_payload(req, cached_payload))
+        return cached_payload
+
     try:
         chunks = search(req.question)
         chunks = _apply_smart_ranking(chunks, req.question)
@@ -2240,7 +2405,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                 ),
                 sources=[],
             )
-            append_log_everywhere(
+            queue_chat_log(
+                background_tasks,
                 {
                     "question": req.question,
                     "session_id": req.session_id,
@@ -2267,7 +2433,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
                 ),
                 sources=[],
             )
-            append_log_everywhere(
+            queue_chat_log(
+                background_tasks,
                 {
                     "question": req.question,
                     "session_id": req.session_id,
@@ -2287,7 +2454,8 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             answer="I couldn't find relevant Green Builder Media content for that question.",
             sources=[],
         )
-        append_log_everywhere(
+        queue_chat_log(
+            background_tasks,
             {
                 "question": req.question,
                 "session_id": req.session_id,
@@ -2403,7 +2571,11 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         attribution_note=attribution_note,
     )
 
-    append_log_everywhere(
+    payload = _chat_payload(response, chunks, question=req.question)
+    _write_chat_cache(cache_key, req.question, payload)
+
+    queue_chat_log(
+        background_tasks,
         {
             "question": req.question,
             "session_id": req.session_id,
@@ -2417,7 +2589,7 @@ def chat(req: ChatRequest) -> dict[str, Any]:
             "attribution_note": attribution_note,
         }
     )
-    return _chat_payload(response, chunks, question=req.question)
+    return payload
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -2921,7 +3093,11 @@ def related_cards(
         cards = search_podcasts(related_query, limit=limit + 4)
         cards = _dedupe_cards(cards, exclude_url=url)[:limit]
     elif card_type in {"pdf", "magazine"}:
-        cards = search_magazine_pdf_cards(related_query, limit=limit + 4)
+        cards = search_magazine_pdf_cards(
+            related_query,
+            limit=limit + 4,
+            allow_expensive_fallback=True,
+        )
         cards = _dedupe_cards(cards, exclude_url=url)[:limit]
     else:
         try:
@@ -2967,7 +3143,7 @@ def related_cards(
 
 @app.get("/api/admin/test-pdf-cards")
 def admin_test_pdf_cards(q: str = "home electrification", _: str = Depends(admin_auth)) -> dict:
-    cards = search_magazine_pdf_cards(q, limit=10)
+    cards = search_magazine_pdf_cards(q, limit=10, allow_expensive_fallback=True)
     return {
         "ok": True,
         "query": q,

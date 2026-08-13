@@ -57,6 +57,7 @@
   let lastPayload = null;
   let currentMode = "visual";
   let currentCardQuery = "";
+  let requestInFlight = false;
 
   function abs(url) {
     if (!url) return "";
@@ -1484,8 +1485,14 @@
   }
 
   async function askQuestion() {
+    if (requestInFlight) return;
+
     const question = input.value.trim();
     if (!question) return;
+
+    requestInFlight = true;
+    sendBtn.disabled = true;
+    sendBtn.textContent = "ASKING";
 
     messages.innerHTML = `
       ${renderQuestion(question)}
@@ -1495,7 +1502,7 @@
           <img src="${esc(COGNITION_LOGO_URL)}" alt="COGNITION">
         </div>
 
-        <div class="gbm-answer">Thinking...</div>
+        <div class="gbm-answer">Finding the best Green Builder Media sources...</div>
       </div>
     `;
 
@@ -1531,6 +1538,10 @@
           </div>
         </div>
       `;
+    } finally {
+      requestInFlight = false;
+      sendBtn.disabled = false;
+      sendBtn.textContent = "SEND";
     }
   }
 

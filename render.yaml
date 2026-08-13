@@ -16,7 +16,19 @@ services:
         value: https://www.greenbuildermedia.com
       - key: SITEMAP_URL
         value: https://www.greenbuildermedia.com/sitemap.xml
+      - key: DATA_DIR
+        value: /data
+      - key: LANCEDB_DIR
+        value: /data/lancedb
       - key: ENABLE_TRANSCRIPT_AUTO_SYNC
         value: true
       - key: TRANSCRIPT_SYNC_INTERVAL_SECONDS
         value: "604800"
+      - key: CHAT_RESPONSE_CACHE_ENABLED
+        value: true
+      - key: CHAT_RESPONSE_CACHE_DIR
+        value: /data/chat_response_cache
+      - key: CHAT_RESPONSE_CACHE_TTL_SECONDS
+        value: "10368000"
+      - key: CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS
+        value: "21600"
