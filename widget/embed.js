@@ -199,10 +199,11 @@
     .gbm-panel {
       position: fixed;
       top: 24px;
-      bottom: 24px;
+      bottom: auto;
       right: 24px;
       left: auto;
       width: min(950px, calc(100vw - 80px));
+      max-height: calc(100vh - 48px);
       z-index: 999998;
       background: #f5f8f7;
       border-radius: 18px;
@@ -238,16 +239,21 @@
     }
 
     .gbm-close {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
+      min-width: 86px;
+      height: 42px;
+      border-radius: 999px;
       border: 0;
-      background: rgba(255,255,255,.12);
+      background: rgba(255,255,255,.14);
       color: white;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      padding: 0 18px;
     }
 
     .gbm-close svg,
@@ -262,7 +268,7 @@
     }
 
     .gbm-messages {
-      flex: 1;
+      flex: 0 1 auto;
       overflow-y: auto;
       padding: 24px;
     }
@@ -630,6 +636,11 @@
       grid-column: 1 / -1;
     }
 
+    .gbm-related-results:empty {
+      display: none;
+      margin: 0;
+    }
+
     .gbm-related-panel {
       background: #f7fbfa;
       border: 1px solid #d8ebe7;
@@ -756,7 +767,12 @@
       .gbm-panel {
         inset: 0;
         width: auto;
+        max-height: none;
         border-radius: 0;
+      }
+
+      .gbm-messages {
+        flex: 1;
       }
 
       .gbm-grid {
@@ -800,9 +816,7 @@
         <div class="gbm-title">GBM DeepThink</div>
       </div>
 
-      <button class="gbm-close" aria-label="Close chatbot">
-        ${icon("close")}
-      </button>
+      <button class="gbm-close" aria-label="Close chatbot">Close</button>
     </div>
 
     <div class="gbm-messages">
