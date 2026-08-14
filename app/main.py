@@ -100,7 +100,7 @@ CHAT_RESPONSE_CACHE_TTL_SECONDS = int(
 CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS = int(
     os.getenv("CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS", str(60 * 60 * 6))
 )
-CHAT_CACHE_SCHEMA_VERSION = "v2"
+CHAT_CACHE_SCHEMA_VERSION = "v3"
 CHAT_TEMPORAL_CACHE_TERMS = {
     "latest", "current", "today", "tonight", "tomorrow", "yesterday",
     "this week", "this month", "this year", "upcoming", "coming up",
