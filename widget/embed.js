@@ -1078,6 +1078,7 @@
                   href="${esc(transcriptUrl(item))}"
                   target="_blank"
                   rel="noopener"
+                  data-transcript-popup="true"
                 >FULL TRANSCRIPT</a>
               `
               : ""
@@ -1307,6 +1308,37 @@
     });
   }
 
+  function bindTranscriptButtons() {
+    messages.querySelectorAll("[data-transcript-popup='true']").forEach(link => {
+      if (link.dataset.popupBound === "true") return;
+      link.dataset.popupBound = "true";
+      link.addEventListener("click", event => {
+        const url = link.href;
+        if (!url) return;
+
+        const width = Math.min(950, Math.max(360, window.screen.availWidth - 80));
+        const height = Math.min(850, Math.max(520, window.screen.availHeight - 80));
+        const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
+        const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
+        const features = [
+          "popup=yes",
+          "resizable=yes",
+          "scrollbars=yes",
+          `width=${width}`,
+          `height=${height}`,
+          `left=${left}`,
+          `top=${top}`
+        ].join(",");
+
+        const transcriptWindow = window.open(url, "gbmTranscript", features);
+        if (transcriptWindow) {
+          event.preventDefault();
+          transcriptWindow.focus();
+        }
+      });
+    });
+  }
+
   async function loadMoreLikeThis(button) {
     const container = messages.querySelector("#gbm-related-results");
     if (!container) return;
@@ -1380,6 +1412,7 @@
           container.innerHTML = "";
         };
       }
+      bindTranscriptButtons();
     } catch (err) {
       container.innerHTML = `
         <div class="gbm-related-panel">
@@ -1488,6 +1521,7 @@
     }
 
     bindMoreLikeButtons();
+    bindTranscriptButtons();
   }
 
   function renderText(payload, question) {
