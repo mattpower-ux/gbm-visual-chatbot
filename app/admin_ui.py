@@ -82,14 +82,12 @@ HTML = r"""
     <button id="check-rebuild-status-btn" class="header-btn secondary">Check Status</button>
     <button id="sync-hot-takes-btn" class="header-btn secondary">Sync Hot Takes</button>
     <button id="sync-cognition-btn" class="header-btn secondary">Sync Cognition Drive</button>
-    <button id="sync-youtube-transcripts-btn" class="header-btn secondary">UPDATE TRANSCRIPTS</button>
     <span id="rebuild-status">Index status: idle</span>
   </div>
 </header>
 
 <main>
   <div class="notice" id="prefillNotice" style="display:none"></div>
-  <div class="notice" id="youtube-transcript-status" style="display:none"></div>
   <div class="notice" id="cognition-sync-status" style="display:none"></div>
 
   <section class="card upload-box">
@@ -1000,7 +998,6 @@ bindClick("uploadThumbBtn", uploadThumbnailOverride);
 bindClick("rebuild-index-btn", rebuildIndex);
 bindClick("sync-hot-takes-btn", syncHotTakes);
 bindClick("sync-cognition-btn", syncCognitionDrive);
-bindClick("sync-youtube-transcripts-btn", syncYouTubeTranscripts);
 bindClick("check-rebuild-status-btn", checkRebuildStatus);
 
 applyPrefillFromUrl();

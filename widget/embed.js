@@ -70,17 +70,6 @@
   function transcriptUrl(item) {
     if (!item) return "";
 
-    // Transcript display upgrade:
-    // Prefer the polished HTML transcript endpoint. The backend still keeps
-    // the legacy raw-text endpoint available, but public buttons should open
-    // the finished HTML document generated from the synced transcript file.
-    // If this feature ever needs to be rolled back temporarily, change the
-    // endpoint below from /api/youtube-transcript-html/ back to
-    // /api/youtube-transcript/.
-    if (item.video_id && (item.has_transcript || item.transcript_file || item.transcript_excerpt || item.transcript_url || item.transcriptUrl)) {
-      return abs(`/api/youtube-transcript-html/${encodeURIComponent(item.video_id)}`);
-    }
-
     const direct =
       item.transcript_url ||
       item.transcriptUrl ||
@@ -96,12 +85,7 @@
       "";
 
     if (direct) {
-      const directText = String(direct);
-      const upgraded = directText.replace(
-        /\/api\/youtube-transcript\//,
-        "/api/youtube-transcript-html/"
-      );
-      return abs(upgraded);
+      return abs(String(direct));
     }
 
     return "";

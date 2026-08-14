@@ -21,11 +21,19 @@ services:
       - key: LANCEDB_DIR
         value: /data/lancedb
       - key: ENABLE_TRANSCRIPT_AUTO_SYNC
-        value: true
+        value: false
       - key: PODCAST_TRANSCRIPT_DRIVE_FOLDER_ID
         value: 10yr6ZpJYdp_9mqQzgeiqw5vFOLs96Hja
       - key: TRANSCRIPT_SYNC_INTERVAL_SECONDS
         value: "604800"
+      - key: HUBSPOT_PORTAL_ID
+        value: "309276"
+      - key: HUBSPOT_TRANSCRIPT_TABLE_ID
+        value: "341630722"
+      - key: HUBSPOT_TRANSCRIPT_BASE_URL
+        value: https://www.greenbuildermedia.com/transcripts
+      - key: HUBSPOT_TRANSCRIPT_CACHE_SECONDS
+        value: "3600"
       - key: CHAT_RESPONSE_CACHE_ENABLED
         value: true
       - key: CHAT_RESPONSE_CACHE_DIR

@@ -44,6 +44,13 @@ class Settings(BaseModel):
         ).split(",")
         if origin.strip()
     ]
+    hubspot_portal_id: str = os.getenv("HUBSPOT_PORTAL_ID", "309276")
+    hubspot_transcript_table_id: str = os.getenv("HUBSPOT_TRANSCRIPT_TABLE_ID", "341630722")
+    hubspot_transcript_base_url: str = os.getenv(
+        "HUBSPOT_TRANSCRIPT_BASE_URL",
+        "https://www.greenbuildermedia.com/transcripts",
+    )
+    hubspot_transcript_cache_seconds: int = int(os.getenv("HUBSPOT_TRANSCRIPT_CACHE_SECONDS", "3600"))
 
 
 @lru_cache(maxsize=1)

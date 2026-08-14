@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, List
 
 import gspread
+import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
@@ -49,6 +50,11 @@ from app.transcript_html import (
 )
 
 settings = get_settings()
+HUBSPOT_TRANSCRIPT_URL_CACHE: dict[str, Any] = {
+    "expires_at": 0.0,
+    "by_video_id": {},
+    "error": "",
+}
 
 # === COGNITION Drive Insight Index ===
 COGNITION_TABLE_NAME = os.getenv("COGNITION_TABLE_NAME", "cognition_insights")
@@ -1602,6 +1608,68 @@ def _load_youtube_transcripts() -> dict[str, Any]:
         return {"count": 0, "transcripts": []}
 
 
+def _hubspot_transcript_url_map() -> dict[str, str]:
+    """Load published HubSpot transcript URLs keyed by YouTube video ID."""
+    now = time.time()
+    cached_map = HUBSPOT_TRANSCRIPT_URL_CACHE.get("by_video_id") or {}
+    if cached_map and now < float(HUBSPOT_TRANSCRIPT_URL_CACHE.get("expires_at") or 0):
+        return dict(cached_map)
+
+    table_id = settings.hubspot_transcript_table_id.strip()
+    portal_id = settings.hubspot_portal_id.strip()
+    base_url = settings.hubspot_transcript_base_url.rstrip("/")
+    if not table_id or not portal_id or not base_url:
+        return {}
+
+    endpoint = f"https://api.hubapi.com/cms/v3/hubdb/tables/{table_id}/rows"
+    by_video_id: dict[str, str] = {}
+    after = ""
+
+    try:
+        with httpx.Client(timeout=12.0) as client:
+            while True:
+                params = {"portalId": portal_id, "limit": "1000"}
+                if after:
+                    params["after"] = after
+
+                response = client.get(endpoint, params=params)
+                response.raise_for_status()
+                payload = response.json()
+
+                for row in payload.get("results", []) or []:
+                    values = row.get("values") or {}
+                    video_id = str(values.get("video_id") or values.get("youtube_id") or "").strip()
+                    path = str(row.get("path") or values.get("path") or values.get("page_slug") or "").strip()
+                    if not video_id or not path:
+                        continue
+                    clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id)
+                    clean_path = path.strip("/")
+                    if clean_video_id and clean_path:
+                        by_video_id[clean_video_id] = f"{base_url}/{clean_path}"
+
+                after = str((payload.get("paging") or {}).get("next", {}).get("after") or "")
+                if not after:
+                    break
+
+        HUBSPOT_TRANSCRIPT_URL_CACHE.update({
+            "expires_at": now + max(settings.hubspot_transcript_cache_seconds, 60),
+            "by_video_id": by_video_id,
+            "error": "",
+        })
+        return dict(by_video_id)
+
+    except Exception as exc:
+        HUBSPOT_TRANSCRIPT_URL_CACHE["error"] = str(exc)
+        return dict(cached_map)
+
+
+def _hubspot_transcript_url_for_video(video_id: Any) -> str:
+    clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", str(video_id or ""))
+    if not clean_video_id:
+        return ""
+    return _hubspot_transcript_url_map().get(clean_video_id, "")
+
+
 def _transcript_for_video(video: dict[str, Any], transcript_cache: dict[str, Any] | None = None) -> dict[str, Any] | None:
     transcript_cache = transcript_cache or _load_youtube_transcripts()
     transcripts = transcript_cache.get("transcripts", []) or []
@@ -1630,28 +1698,26 @@ def _enrich_media_item_with_transcript(
     transcript_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     enriched = dict(media_item)
-    transcript = _transcript_for_video(enriched, transcript_cache)
-
-    if not transcript:
+    hubspot_transcript_url = _hubspot_transcript_url_for_video(enriched.get("video_id"))
+    if not hubspot_transcript_url:
         enriched["has_transcript"] = False
         enriched["transcript_url"] = ""
         enriched["transcriptUrl"] = ""
         return enriched
 
-    transcript_preview = str(transcript.get("text_preview", "") or "")
+    transcript = _transcript_for_video(enriched, transcript_cache)
+
+    transcript_preview = str(transcript.get("text_preview", "") if transcript else "")
     enriched["has_transcript"] = True
-    enriched["transcript_file"] = transcript.get("filename", "")
+    enriched["transcript_file"] = transcript.get("filename", "") if transcript else ""
     enriched["transcript_excerpt"] = transcript_preview[:240]
-    enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
+    if transcript_preview:
+        enriched["description"] = transcript_preview[:300] or enriched.get("description", "")
 
-    transcript_endpoint = ""
-    if enriched.get("video_id"):
-        transcript_endpoint = f"/api/youtube-transcript-html/{enriched.get('video_id')}"
-
-    enriched["transcript_url"] = transcript_endpoint
-    enriched["transcriptUrl"] = transcript_endpoint
-    enriched["drive_transcript_url"] = transcript_endpoint
-    enriched["google_drive_transcript"] = transcript_endpoint
+    enriched["transcript_url"] = hubspot_transcript_url
+    enriched["transcriptUrl"] = hubspot_transcript_url
+    enriched["drive_transcript_url"] = ""
+    enriched["google_drive_transcript"] = ""
     return enriched
 
 
@@ -2904,23 +2970,13 @@ def admin_youtube_status(_: str = Depends(admin_auth)) -> dict:
 
 @app.post("/api/admin/sync-youtube-transcripts")
 def admin_sync_youtube_transcripts(_: str = Depends(admin_auth)) -> dict:
-    result = sync_youtube_transcripts()
-    html_result = build_all_transcript_html(result)
     return {
-        "ok": bool(result.get("ok", True)),
+        "ok": False,
+        "disabled": True,
         "message": (
-            f"Video and podcast transcripts synced. "
-            f"{result.get('count', 0)} transcript file(s) available."
+            "Transcript publishing is managed outside the chatbot admin. "
+            "Chatbot transcript buttons now resolve from the published HubSpot HubDB table."
         ),
-        "transcript_count": result.get("count", 0),
-        "by_video_id_count": result.get("by_video_id_count", 0),
-        "by_title_count": result.get("by_title_count", 0),
-        "drive_sync": result.get("drive_sync", {}),
-        "failed": result.get("failed", []),
-        "cache_file": str(YOUTUBE_TRANSCRIPT_CACHE_FILE),
-        "transcript_dir": str(YOUTUBE_TRANSCRIPT_DIR),
-        "html_build": html_result,
-        "html_dir": str(TRANSCRIPT_HTML_DIR),
     }
 
 
