@@ -53,6 +53,7 @@ settings = get_settings()
 HUBSPOT_TRANSCRIPT_URL_CACHE: dict[str, Any] = {
     "expires_at": 0.0,
     "by_video_id": {},
+    "rows": [],
     "error": "",
 }
 
@@ -1623,6 +1624,7 @@ def _hubspot_transcript_url_map() -> dict[str, str]:
 
     endpoint = f"https://api.hubapi.com/cms/v3/hubdb/tables/{table_id}/rows"
     by_video_id: dict[str, str] = {}
+    rows: list[dict[str, Any]] = []
     after = ""
 
     try:
@@ -1646,6 +1648,7 @@ def _hubspot_transcript_url_map() -> dict[str, str]:
                     clean_path = path.strip("/")
                     if clean_video_id and clean_path:
                         by_video_id[clean_video_id] = f"{base_url}/{clean_path}"
+                        rows.append(row)
 
                 after = str((payload.get("paging") or {}).get("next", {}).get("after") or "")
                 if not after:
@@ -1654,6 +1657,7 @@ def _hubspot_transcript_url_map() -> dict[str, str]:
         HUBSPOT_TRANSCRIPT_URL_CACHE.update({
             "expires_at": now + max(settings.hubspot_transcript_cache_seconds, 60),
             "by_video_id": by_video_id,
+            "rows": rows,
             "error": "",
         })
         return dict(by_video_id)
@@ -1668,6 +1672,100 @@ def _hubspot_transcript_url_for_video(video_id: Any) -> str:
     if not clean_video_id:
         return ""
     return _hubspot_transcript_url_map().get(clean_video_id, "")
+
+
+def _hubspot_transcript_rows() -> list[dict[str, Any]]:
+    _hubspot_transcript_url_map()
+    rows = HUBSPOT_TRANSCRIPT_URL_CACHE.get("rows") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _hubspot_transcript_card(row: dict[str, Any]) -> dict[str, Any] | None:
+    values = row.get("values") or {}
+    video_id = str(values.get("video_id") or values.get("youtube_id") or "").strip()
+    transcript_url = _hubspot_transcript_url_for_video(video_id)
+    if not video_id or not transcript_url:
+        return None
+
+    content_type = str(values.get("conttype") or values.get("content_type") or "").strip().lower()
+    card_type = "podcast" if "podcast" in content_type else "video"
+    title = str(row.get("name") or values.get("title") or values.get("page_title") or "Green Builder Media Transcript").strip()
+    summary = str(values.get("summary") or values.get("metades") or "").strip()
+    youtube_url = str(values.get("youtube_url") or values.get("source_url") or f"https://www.youtube.com/watch?v={video_id}").strip()
+    thumbnail = str(values.get("thumbnail_url") or f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg").strip()
+
+    return {
+        "type": card_type,
+        "title": title,
+        "description": summary,
+        "summary": summary,
+        "url": youtube_url,
+        "thumbnail": thumbnail,
+        "thumbnail_url": thumbnail,
+        "image": thumbnail,
+        "source": "Green Builder Media Network" if card_type == "podcast" else "Green Builder Media YouTube",
+        "video_id": video_id,
+        "published_at": values.get("published_at"),
+        "speakers": values.get("speakers", ""),
+        "topic_tags": values.get("topic_tags", ""),
+        "has_transcript": True,
+        "transcript_url": transcript_url,
+        "transcriptUrl": transcript_url,
+    }
+
+
+def _score_hubspot_transcript_card(query: str, card: dict[str, Any]) -> float:
+    query_terms = _tokenize_for_video_search(query)
+    if not query_terms:
+        return 0.0
+
+    haystack = " ".join(
+        str(card.get(key, "") or "")
+        for key in ("title", "description", "summary", "speakers", "topic_tags")
+    ).lower()
+    title_lower = str(card.get("title", "") or "").lower()
+    q_lower = (query or "").lower()
+
+    score = 0.0
+    for term in query_terms:
+        variants = {term}
+        if term.endswith("s") and len(term) > 4:
+            variants.add(term[:-1])
+
+        if any(variant in title_lower for variant in variants):
+            score += 5.0
+        if any(variant in haystack for variant in variants):
+            score += 2.0
+
+    for phrase in (
+        "healthy home", "healthy homes", "indoor air quality", "iaq",
+        "architects", "architecture", "leadership", "affordability",
+        "resilience", "sustainability", "energy", "housing"
+    ):
+        if phrase in q_lower and phrase.rstrip("s") in haystack:
+            score += 8.0
+
+    if _visual_subject_required(query):
+        subject_hits = _visual_subject_hit_count(query, haystack)
+        if subject_hits == 0:
+            return 0.0
+        score += min(subject_hits * 5.0, 15.0)
+
+    return score
+
+
+def _search_hubspot_transcript_cards(query: str, media_type: str, limit: int) -> list[dict[str, Any]]:
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for row in _hubspot_transcript_rows():
+        card = _hubspot_transcript_card(row)
+        if not card or card.get("type") != media_type:
+            continue
+        score = _score_hubspot_transcript_card(query, card)
+        if score > 0:
+            scored.append((score, card))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [card for _, card in scored[:limit]]
 
 
 def _transcript_for_video(video: dict[str, Any], transcript_cache: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -1901,14 +1999,11 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
 
     Transcript text is used when /data/youtube_transcripts.json exists.
     """
-    videos = _load_youtube_videos()
-    if not videos:
-        return []
-
     query_terms = _tokenize_for_video_search(query)
     if not query_terms:
         return []
 
+    videos = _load_youtube_videos()
     transcript_cache = _load_youtube_transcripts()
 
     scored: list[tuple[float, dict[str, Any]]] = []
@@ -1952,7 +2047,20 @@ def search_youtube_videos(query: str, limit: int = 2) -> list[dict[str, Any]]:
             scored.append((score, _enrich_media_item_with_transcript(video, transcript_cache)))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [dict(video) for _, video in scored[:limit]]
+    results = [dict(video) for _, video in scored]
+
+    hubspot_cards = _search_hubspot_transcript_cards(query, "video", limit=limit)
+    combined: list[dict[str, Any]] = []
+    seen_video_ids: set[str] = set()
+    for item in hubspot_cards + results:
+        video_id = str(item.get("video_id") or "").strip()
+        key = video_id or str(item.get("url") or item.get("title") or "")
+        if key in seen_video_ids:
+            continue
+        seen_video_ids.add(key)
+        combined.append(item)
+
+    return combined[:limit]
 
 
 
@@ -2056,14 +2164,11 @@ def _load_podcast_videos() -> list[dict[str, Any]]:
 
 def search_podcasts(query: str, limit: int = 2) -> list[dict[str, Any]]:
     """Return matching GBM podcast episodes from the podcast YouTube playlist."""
-    podcasts = _load_podcast_videos()
-    if not podcasts:
-        return []
-
     query_terms = _tokenize_for_video_search(query)
     if not query_terms:
         return []
 
+    podcasts = _load_podcast_videos()
     transcript_cache = _load_youtube_transcripts()
     scored: list[tuple[float, dict[str, Any]]] = []
 
@@ -2100,7 +2205,20 @@ def search_podcasts(query: str, limit: int = 2) -> list[dict[str, Any]]:
             scored.append((score, _enrich_media_item_with_transcript(podcast, transcript_cache)))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [dict(podcast) for _, podcast in scored[:limit]]
+    results = [dict(podcast) for _, podcast in scored]
+
+    hubspot_cards = _search_hubspot_transcript_cards(query, "podcast", limit=limit)
+    combined: list[dict[str, Any]] = []
+    seen_video_ids: set[str] = set()
+    for item in hubspot_cards + results:
+        video_id = str(item.get("video_id") or "").strip()
+        key = video_id or str(item.get("url") or item.get("title") or "")
+        if key in seen_video_ids:
+            continue
+        seen_video_ids.add(key)
+        combined.append(item)
+
+    return combined[:limit]
 
 def _score_magazine_chunk_for_query(chunk: dict[str, Any], question: str) -> float:
     """Lightweight keyword score for magazine/PDF card fallback search."""
