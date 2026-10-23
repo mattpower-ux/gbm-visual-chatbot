@@ -29,6 +29,43 @@
     "https://gbm-visual-chatbot.onrender.com"
   ).replace(/\/$/, "");
 
+  const SESSION_KEY = "gbm-chat-session-v1:" + API_BASE;
+  let chatSession = null;
+  let sessionPromise = null;
+  async function getChatSession() {
+    if (!chatSession) {
+      try { chatSession = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch (_) {}
+    }
+    if (chatSession && chatSession.expires_at * 1000 > Date.now() + 30000) return chatSession;
+    if (!sessionPromise) {
+      sessionPromise = fetch(API_BASE + "/api/chat-session", { method: "POST" })
+        .then(async response => {
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || "Chat is temporarily unavailable.");
+          chatSession = data;
+          try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(data)); } catch (_) {}
+          return data;
+        }).finally(() => { sessionPromise = null; });
+    }
+    return sessionPromise;
+  }
+
+  async function chatFetch(path, options = {}) {
+    const session = await getChatSession();
+    const response = await fetch(API_BASE + path, {
+      ...options, headers: { ...(options.headers || {}), "X-Chat-Token": session.token }
+    });
+    if (response.status === 401) {
+      chatSession = null;
+      try { sessionStorage.removeItem(SESSION_KEY); } catch (_) {}
+    }
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || "Chat is temporarily unavailable. Please try again.");
+    }
+    return response;
+  }
+
   const CHATBOT_TITLE =
     currentScript?.dataset.chatbotTitle ||
     "GBM DeepThink";
@@ -837,8 +874,8 @@
 
     <div class="gbm-messages">
       <div class="gbm-welcome">
-        Make your query, and tap the power of COGNITION SmartData,
-        combining new research with 25 years of expertise in sustainable building.
+        Explore Green Builder's published reporting on sustainable building.
+        <p style="font-size:12px;line-height:1.4">Please avoid sharing personal details. We use reader questions to improve our coverage.</p>
       </div>
     </div>
 
@@ -1373,7 +1410,7 @@
         limit: "4"
       });
 
-      const response = await fetch(API_BASE + "/api/related-cards?" + params.toString());
+      const response = await chatFetch("/api/related-cards?" + params.toString());
 
       if (!response.ok) {
         throw new Error("Related-card search failed with HTTP " + response.status);
@@ -1575,14 +1612,15 @@
     input.value = "";
 
     try {
-      const response = await fetch(API_BASE + "/chat", {
+      const session = await getChatSession();
+      const response = await chatFetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
-          session_id: "web-" + Date.now(),
-          page_url: window.location.href,
-          referrer: document.referrer || "",
+          session_id: session.session_id,
+          page_url: window.location.origin + window.location.pathname,
+          referrer: document.referrer ? new URL(document.referrer).origin : "",
           user_agent: navigator.userAgent || ""
         })
       });
@@ -1604,6 +1642,8 @@
           </div>
         </div>
       `;
+      const errorMessage = messages.querySelector('.gbm-answer');
+      if (errorMessage) errorMessage.textContent = err.message || 'Chat is temporarily unavailable. Please try again.';
     } finally {
       requestInFlight = false;
       sendBtn.disabled = false;

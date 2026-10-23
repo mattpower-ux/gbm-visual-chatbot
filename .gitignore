@@ -1,0 +1,7 @@
+.test-deps/
+.test-output/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.sqlite3*
+chat_session_secret

@@ -40,7 +40,7 @@ class Settings(BaseModel):
         origin.strip()
         for origin in os.getenv(
             "ALLOWED_ORIGINS",
-            "https://www.greenbuildermedia.com,http://localhost:3000,http://localhost:8000",
+            "https://www.greenbuildermedia.com,https://greenbuildermedia.com,http://localhost:3000,http://localhost:8000",
         ).split(",")
         if origin.strip()
     ]

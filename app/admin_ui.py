@@ -66,6 +66,16 @@ HTML = r"""
     .small-btn { padding: 6px 9px; border-radius: 8px; font-size: 12px; font-weight: 700; }
     .small-btn.secondary { background: #e2e8f0; color: #0f172a; }
     @media (max-width: 900px) { .file-dashboard, .ingest-grid { grid-template-columns: 1fr 1fr; } }
+    .editorial-section { padding: 20px 0; border-bottom: 1px solid #cbd5e1; margin-bottom: 20px; }
+    .editorial-toolbar { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+    .editorial-toolbar label { display: grid; gap: 5px; min-width: 150px; }
+    .editorial-table-wrap { overflow-x: auto; }
+    .editorial-section table { border-collapse: collapse; width: 100%; margin-top: 14px; }
+    .editorial-section th, .editorial-section td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #cbd5e1; vertical-align: top; }
+    .editorial-section td:first-child { min-width: 220px; }
+    .editorial-section summary { cursor: pointer; font-weight: 600; }
+    .editorial-section p, .editorial-section li { overflow-wrap: anywhere; }
+    #editorial-status { margin: 12px 0; }
     @media (max-width: 560px) { .file-dashboard, .ingest-grid { grid-template-columns: 1fr; } }
     @media (max-width: 760px) {
       header { align-items: flex-start; flex-direction: column; }
@@ -87,6 +97,17 @@ HTML = r"""
 </header>
 
 <main>
+  <section class="editorial-section" aria-labelledby="editorial-title">
+    <h2 id="editorial-title">Reader Questions <span class="muted">Private editorial report</span></h2>
+    <div class="editorial-toolbar">
+      <label>Period<select id="editorial-days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></label>
+      <button id="editorial-generate" type="button">Generate report</button>
+      <button id="editorial-download" type="button" disabled>Download report</button>
+      <button id="editorial-retry" type="button">Retry log delivery</button>
+    </div>
+    <div id="editorial-status" role="status">No report generated.</div>
+    <div id="editorial-report"></div>
+  </section>
   <div class="notice" id="prefillNotice" style="display:none"></div>
   <div class="notice" id="cognition-sync-status" style="display:none"></div>
 
@@ -966,6 +987,81 @@ function bindClick(id, fn) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("click", fn);
 }
+
+let editorialReport = null;
+async function generateEditorialReport() {
+  const status = document.getElementById('editorial-status');
+  const button = document.getElementById('editorial-generate');
+  button.disabled = true;
+  status.textContent = 'Loading reader questions...';
+  try {
+    const days = document.getElementById('editorial-days').value;
+    const response = await fetch('/api/admin/editorial-report?days=' + days, { credentials: 'same-origin', cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Report unavailable');
+    editorialReport = data;
+    const log = data.logging;
+    status.textContent = `${data.questions} questions across ${data.sessions} sessions. Stored: ${log.stored}. Pending Sheets delivery: ${log.pending}. Failed deliveries: ${log.failed}.` + (log.sheets_configured ? '' : ' Sheets credentials or destination are missing.') + (log.last_error ? ' ' + log.last_error : '');
+    const report = document.getElementById('editorial-report');
+    report.innerHTML = '';
+    const note = document.createElement('p'); note.className = 'muted'; note.textContent = data.note; report.appendChild(note);
+    const exclusions = document.createElement('p'); exclusions.className = 'muted';
+    exclusions.textContent = 'Excluded: ' + (Object.entries(data.excluded).map(([key, value]) => `${key}: ${value}`).join(', ') || 'none') + (data.truncated ? '. Report limited to the most recent 20,000 stored queries.' : '');
+    report.appendChild(exclusions);
+    if (!data.themes.length) {
+      const empty = document.createElement('p'); empty.textContent = 'No eligible reader questions in this period.'; report.appendChild(empty);
+    } else {
+      const wrap = document.createElement('div'); wrap.className = 'editorial-table-wrap';
+      const table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>Theme and reporting angle</th><th>Sessions</th><th>Questions</th><th>Weak answers</th></tr></thead>';
+      const body = document.createElement('tbody');
+      for (const theme of data.themes) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        const heading = document.createElement('strong'); heading.textContent = theme.topic; cell.appendChild(heading);
+        const angle = document.createElement('p'); angle.textContent = theme.angle; cell.appendChild(angle);
+        const signal = document.createElement('p'); signal.className = 'muted'; signal.textContent = theme.signal + '. Constraints: ' + (Object.keys(theme.constraints).join(', ') || 'none identified'); cell.appendChild(signal);
+        const details = document.createElement('details');
+        const summary = document.createElement('summary'); summary.textContent = 'Evidence and existing coverage'; details.appendChild(summary);
+        const list = document.createElement('ul');
+        for (const example of theme.examples) { const li = document.createElement('li'); li.textContent = example.question + ' (' + example.date.slice(0, 10) + ')'; list.appendChild(li); }
+        details.appendChild(list);
+        for (const source of theme.coverage) {
+          const p = document.createElement('p');
+          const link = document.createElement('a');
+          if (/^https:\/\//i.test(source.url) || source.url.startsWith('/magazines/')) {
+            link.href = source.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = source.url; p.appendChild(link); details.appendChild(p);
+          }
+        }
+        cell.appendChild(details); row.appendChild(cell);
+        for (const number of [theme.sessions, theme.questions, theme.weak_answers]) { const td = document.createElement('td'); td.textContent = number; row.appendChild(td); }
+        body.appendChild(row);
+      }
+      table.appendChild(body); wrap.appendChild(table); report.appendChild(wrap);
+    }
+    if (data.journeys.length) {
+      const heading = document.createElement('h3'); heading.textContent = 'Questions within a session'; report.appendChild(heading);
+      for (const journey of data.journeys) { const list = document.createElement('ol'); for (const item of journey) { const li = document.createElement('li'); li.textContent = item.question; list.appendChild(li); } report.appendChild(list); }
+    }
+    document.getElementById('editorial-download').disabled = false;
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = false; }
+}
+bindClick('editorial-generate', generateEditorialReport);
+bindClick('editorial-retry', async () => {
+  const button = document.getElementById('editorial-retry'); button.disabled = true;
+  try {
+    const response = await fetch('/api/admin/retry-query-logs', { method: 'POST', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('Log retry failed. Check server configuration.');
+    await generateEditorialReport();
+  } catch (error) { document.getElementById('editorial-status').textContent = error.message; }
+  finally { button.disabled = false; }
+});
+bindClick('editorial-download', () => {
+  if (!editorialReport) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(editorialReport, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a'); link.href = url; link.download = 'gbm-reader-questions.json'; link.click(); URL.revokeObjectURL(url);
+});
 
 bindClick('saveBtn', async () => {
   const payload = {

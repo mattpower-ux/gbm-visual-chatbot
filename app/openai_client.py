@@ -13,7 +13,7 @@ def get_openai_client() -> OpenAI:
     settings = get_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured.")
-    return OpenAI(api_key=settings.openai_api_key)
+    return OpenAI(api_key=settings.openai_api_key, timeout=30.0, max_retries=1)
 
 
 def chat_completion(messages: List[Dict[str, str]], model: str = "gpt-4o-mini") -> str:
@@ -27,6 +27,7 @@ def chat_completion(messages: List[Dict[str, str]], model: str = "gpt-4o-mini") 
         model=model,
         messages=messages,
         temperature=0.3,
+        max_tokens=900,
     )
 
     return completion.choices[0].message.content or ""

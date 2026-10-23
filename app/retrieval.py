@@ -10,6 +10,7 @@ import lancedb
 
 from app.config import get_settings
 from app.openai_client import get_openai_client
+from app.public_content import is_public_content
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9']+")
@@ -416,12 +417,12 @@ def search(question: str) -> List[Dict[str, Any]]:
 
     candidate_limit = max(settings.top_k * 8, settings.max_context_chunks * 8)
 
-    df = table.search(embedding).limit(candidate_limit).to_pandas()
+    df = table.search(embedding).where("visibility = 'public' AND surface_policy IN ('public', 'show_source')", prefilter=True).limit(candidate_limit).to_pandas()
     records = df.to_dict(orient="records")
 
     rescored: List[Dict[str, Any]] = []
     for item in records:
-        if item.get("surface_policy") == "blocked":
+        if not is_public_content(item):
             continue
 
         search_text = combined_search_text(item)

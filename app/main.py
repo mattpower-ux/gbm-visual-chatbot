@@ -16,7 +16,8 @@ from typing import Any, List
 
 import gspread
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, Request, Query, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -41,6 +42,10 @@ from app.models import (
     SourceItem,
 )
 from app.retrieval import search
+from app.public_content import is_public_content
+from app.reader_data import append_event, read_events, flush_outbox, import_legacy_logs, logging_status
+from app.editorial_report import build_report
+from app.chat_access import issue_session, admit_request, release_request, check_origin, PUBLIC_WORK_PATHS
 from app.hot_take_matcher import best_hot_take
 from app.transcript_html import (
     TRANSCRIPT_HTML_DIR,
@@ -100,7 +105,7 @@ CHAT_RESPONSE_CACHE_TTL_SECONDS = int(
 CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS = int(
     os.getenv("CHAT_RESPONSE_CACHE_TEMPORAL_TTL_SECONDS", str(60 * 60 * 6))
 )
-CHAT_CACHE_SCHEMA_VERSION = "v3"
+CHAT_CACHE_SCHEMA_VERSION = "v4-public-only"
 CHAT_TEMPORAL_CACHE_TERMS = {
     "latest", "current", "today", "tonight", "tomorrow", "yesterday",
     "this week", "this month", "this year", "upcoming", "coming up",
@@ -110,16 +115,56 @@ CHAT_TEMPORAL_CACHE_TERMS = {
 _MAGAZINE_CARD_ROWS_CACHE_KEY: str | None = None
 _MAGAZINE_CARD_ROWS_CACHE: list[dict[str, Any]] | None = None
 
-app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.3.0")
+app = FastAPI(title="Green Builder Media Retrieval Bot", version="0.4.0", docs_url=None, redoc_url=None, openapi_url=None)
 security = HTTPBasic()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def public_access_boundary(request: Request, call_next):
+    admitted = False
+    private_route = request.url.path.startswith(("/admin", "/api/admin", "/api/cognition/"))
+    try:
+        if private_route and request.method != "OPTIONS":
+            credentials = await security(request)
+            admin_auth(credentials)
+        if private_route and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            check_origin(request)
+        if request.url.path in PUBLIC_WORK_PATHS and request.method != "OPTIONS":
+            if request.method == "POST" and "content-length" not in request.headers:
+                raise HTTPException(411, "Content-Length required.")
+            if len(request.url.query) > 6000 or int(request.headers.get("content-length", "0")) > 16000:
+                raise HTTPException(413, "Request is too large.")
+            await asyncio.to_thread(admit_request, request)
+            admitted = True
+        response = await call_next(request)
+    except HTTPException as exc:
+        response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+    except ValueError:
+        response = JSONResponse({"detail": "Invalid request."}, status_code=400)
+    finally:
+        if admitted:
+            release_request()
+    if private_route or request.url.path in PUBLIC_WORK_PATHS or request.url.path == "/api/chat-session":
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    origin = request.headers.get("origin")
+    if origin in settings.allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    return response
+
+
+@app.post("/api/chat-session")
+def create_chat_session(request: Request):
+    return issue_session(request)
 
 TODAY = date.today()
 DAILY_CRAWL_INTERVAL_SECONDS = 60 * 60 * 24
@@ -183,6 +228,8 @@ DATE_PATTERNS = [
 
 
 def admin_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+    if not settings.admin_password or settings.admin_password == "change-me":
+        raise HTTPException(status_code=503, detail="Admin credentials must be configured.")
     expected_username = settings.admin_username.encode("utf-8")
     expected_password = settings.admin_password.encode("utf-8")
     given_username = credentials.username.encode("utf-8")
@@ -217,8 +264,10 @@ def get_google_sheet():
         scopes=scopes,
     )
     client = gspread.authorize(credentials)
+    client.set_timeout(15)
     spreadsheet = client.open_by_key(sheet_id)
-    return spreadsheet.sheet1
+    worksheet_name = os.getenv("GOOGLE_SHEET_WORKSHEET", "").strip()
+    return spreadsheet.worksheet(worksheet_name) if worksheet_name else spreadsheet.sheet1
 
 
 def ensure_sheet_header(worksheet) -> None:
@@ -226,18 +275,23 @@ def ensure_sheet_header(worksheet) -> None:
         "timestamp_utc", "session_id", "page_url", "referrer", "user_agent",
         "event_query", "question", "answer", "sources_json",
         "private_archive_used", "attribution_note", "correction_applied",
-        "correction_id",
+        "correction_id", "request_id",
     ]
     existing_header = worksheet.row_values(1)
+    if existing_header and existing_header[:13] != expected_header[:13]:
+        raise RuntimeError("Unexpected worksheet header; select the chatbot log worksheet.")
     if existing_header != expected_header:
-        worksheet.update("A1:M1", [expected_header])
+        worksheet.update(range_name="A1:N1", values=[expected_header])
 
 
 def log_to_google_sheet(payload: dict) -> None:
     worksheet = get_google_sheet()
     ensure_sheet_header(worksheet)
+    event_id = payload.get("id", "")
+    if event_id and event_id in worksheet.col_values(14):
+        return
     row = [
-        datetime.utcnow().isoformat(),
+        payload.get("created_at") or datetime.utcnow().isoformat(),
         payload.get("session_id", "") or "",
         payload.get("page_url", "") or "",
         payload.get("referrer", "") or "",
@@ -250,6 +304,7 @@ def log_to_google_sheet(payload: dict) -> None:
         payload.get("attribution_note", "") or "",
         str(payload.get("correction_applied", False)),
         payload.get("correction_id", "") or "",
+        event_id,
     ]
     worksheet.append_row(row, value_input_option="RAW")
 
@@ -272,8 +327,29 @@ def append_log_local_then_sheet(payload: dict) -> None:
 
 
 def queue_chat_log(background_tasks: BackgroundTasks, payload: dict) -> None:
-    """Keep external logging out of the user-facing response path."""
-    background_tasks.add_task(append_log_local_then_sheet, payload)
+    """Commit locally before responding; Sheets delivery can safely retry."""
+    append_event(payload)
+    background_tasks.add_task(flush_outbox, log_to_google_sheet)
+
+
+async def run_sheet_delivery_loop():
+    while True:
+        try:
+            await asyncio.to_thread(flush_outbox, log_to_google_sheet)
+        except Exception:
+            print("Query outbox unavailable; inspect local disk permissions and free space.")
+        await asyncio.sleep(60)
+
+
+@app.on_event("shutdown")
+async def stop_sheet_delivery():
+    task = getattr(app.state, "sheet_delivery_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _normalize_cache_question(question: str) -> str:
@@ -441,6 +517,8 @@ async def run_rebuild_once() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    import_legacy_logs()
+    app.state.sheet_delivery_task = asyncio.create_task(run_sheet_delivery_loop())
     if ENABLE_BACKGROUND_CRAWL:
         asyncio.create_task(run_daily_crawl_loop())
     else:
@@ -476,11 +554,9 @@ def is_future_event_query(question: str) -> bool:
         "calendar",
         "register",
         "registration",
-        "2026",
-        "2027",
     ]
 
-    return any(term in q for term in future_intent_terms)
+    return bool(re.search(r"\b(event|conference|symposium|webinar|summit|workshop)s?\b", q)) and any(term in q for term in future_intent_terms)
 
 
 def parse_published_year(published_at: str | None) -> int | None:
@@ -601,7 +677,7 @@ def health() -> dict:
 def widget() -> FileResponse:
     root = Path(__file__).resolve().parents[1]
     widget_path = root / "widget" / "embed.js"
-    return FileResponse(widget_path, media_type="application/javascript")
+    return FileResponse(widget_path, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 
@@ -761,19 +837,7 @@ def _is_magazine_chunk(chunk: dict[str, Any]) -> bool:
 
 
 def _is_public_chunk(chunk: dict[str, Any]) -> bool:
-    """Surface public GBM URLs and magazine PDFs; keep true private drafts hidden."""
-    url = str(chunk.get("url", "") or "").strip()
-
-    if (
-        url.startswith("https://www.greenbuildermedia.com/")
-        or url.startswith("https://greenbuildermedia.com/")
-        or url.startswith("/magazines/")
-        or "/magazines/" in url
-    ):
-        return True
-
-    visibility = str(chunk.get("visibility", "public") or "public").strip().lower()
-    return visibility not in {"private", "internal", "draft", "hidden", "false", "0"}
+    return is_public_content(chunk)
 
 
 
@@ -1153,8 +1217,7 @@ def _magazine_source_from_chunk(chunk: dict[str, Any]) -> SourceItem | None:
     if not _is_magazine_chunk(chunk):
         return None
 
-    visibility = chunk.get("visibility", "public")
-    if visibility != "public":
+    if not is_public_content(chunk):
         return None
 
     filename = str(chunk.get("pdf_filename", "")).strip()
@@ -2263,6 +2326,8 @@ def _score_magazine_chunk_for_query(chunk: dict[str, Any], question: str) -> flo
 
 def _magazine_card_from_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a magazine/PDF chunk into a UI card with cover fields populated."""
+    if not is_public_content(chunk):
+        return None
     url = str(chunk.get("url", "") or "").strip()
     filename = str(chunk.get("pdf_filename", "") or "").strip()
 
@@ -2320,7 +2385,7 @@ def _load_magazine_card_rows() -> list[dict[str, Any]]:
         return []
 
     rows = df.to_dict(orient="records")
-    magazines = [row for row in rows if _is_magazine_chunk(row)]
+    magazines = [row for row in rows if _is_magazine_chunk(row) and is_public_content(row)]
     _MAGAZINE_CARD_ROWS_CACHE_KEY = cache_key
     _MAGAZINE_CARD_ROWS_CACHE = magazines
     return magazines
@@ -2371,7 +2436,7 @@ def search_magazine_pdf_cards(
     if not question:
         return []
 
-    more_chunks = list(chunks or [])
+    more_chunks = [chunk for chunk in (chunks or []) if is_public_content(chunk)]
 
     if not more_chunks and allow_expensive_fallback:
         try:
@@ -2388,6 +2453,8 @@ def search_magazine_pdf_cards(
     seen_urls: set[str] = set()
 
     for chunk in more_chunks or []:
+        if not is_public_content(chunk):
+            continue
         url = str(chunk.get("url", "") or "").strip()
         filename = str(chunk.get("pdf_filename", "") or "").strip()
         source = str(chunk.get("source_name", "") or "")
@@ -2542,7 +2609,7 @@ def find_best_cognition_insight(query: str) -> dict[str, Any] | None:
 
 def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = None, question: str = "") -> dict[str, Any]:
     """Return the backward-compatible answer plus visual-mode fields."""
-    chunks = chunks or []
+    chunks = [chunk for chunk in (chunks or []) if is_public_content(chunk)]
     base = response.model_dump()
     answer = base.get("answer", "") or ""
     sources = base.get("sources", []) or []
@@ -2580,14 +2647,7 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
     #
     # To reactivate later, set ENABLE_COGNITION_VISUAL_MODULE=true in Render.
     hot_take = None
-    if COGNITION_VISUAL_MODULE_ENABLED:
-        try:
-            hot_take = find_best_cognition_insight(question) if question else None
-            if not hot_take:
-                hot_take = best_hot_take(question) if question else None
-        except Exception as exc:
-            print(f"COGNITION / Hot Take matching failed: {exc}")
-            hot_take = None
+    # Private COGNITION research is available only through authenticated tools.
 
     base.update(
         {
@@ -2606,15 +2666,16 @@ def _chat_payload(response: ChatResponse, chunks: list[dict[str, Any]] | None = 
 
 
 @app.post("/chat")
-def chat(req: ChatRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+def chat(req: ChatRequest, background_tasks: BackgroundTasks, request: Request) -> dict[str, Any]:
+    req.session_id = request.state.chat_session_id
+    req.user_agent = request.headers.get("user-agent", "")[:300]
     correction = find_correction(req.question)
     if correction:
         response = ChatResponse(
             answer=correction["answer_override"],
             sources=[],
             corrected_by_editor=True,
-            correction_note=correction.get("editor_note")
-            or f"Editor override by {correction.get('editor_name') or 'editor'}",
+            correction_note="Editor-reviewed answer",
         )
         queue_chat_log(
             background_tasks,
@@ -2641,7 +2702,7 @@ def chat(req: ChatRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
         return cached_payload
 
     try:
-        chunks = search(req.question)
+        chunks = [chunk for chunk in search(req.question) if is_public_content(chunk)]
         chunks = _apply_smart_ranking(chunks, req.question)
         chunks = _apply_source_weights_and_limits(chunks)
     except Exception as exc:
@@ -2669,7 +2730,8 @@ def chat(req: ChatRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
                 }
             )
             return _chat_payload(response, question=req.question)
-        raise HTTPException(status_code=500, detail=f"Search failed: {exc}") from exc
+        queue_chat_log(background_tasks, {"question": req.question, "session_id": req.session_id, "user_agent": req.user_agent, "answer": "", "public_sources": [], "error": "search_unavailable"})
+        raise HTTPException(status_code=503, detail="Search is temporarily unavailable. Please try again.") from exc
 
     future_query = is_future_event_query(req.question)
     if future_query:
@@ -2722,7 +2784,8 @@ def chat(req: ChatRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     try:
         answer = answer_question(req.question, chunks)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Generation failed: {exc}") from exc
+        queue_chat_log(background_tasks, {"question": req.question, "session_id": req.session_id, "user_agent": req.user_agent, "answer": "", "public_sources": [], "error": "generation_unavailable"})
+        raise HTTPException(status_code=503, detail="The answer service is temporarily unavailable. Please try again.") from exc
 
     private_used, attribution_note = summarize_private_usage(chunks)
 
@@ -2848,7 +2911,18 @@ def admin_page(_: str = Depends(admin_auth)) -> HTMLResponse:
 
 @app.get("/api/admin/logs", response_model=LogListResponse)
 def admin_logs(_: str = Depends(admin_auth)) -> LogListResponse:
-    return LogListResponse(logs=load_logs())
+    return LogListResponse(logs=read_events(limit=50))
+
+
+@app.get("/api/admin/editorial-report")
+def editorial_report(days: int = Query(30, ge=1, le=90), _: str = Depends(admin_auth)):
+    return build_report(days)
+
+
+@app.post("/api/admin/retry-query-logs")
+def retry_query_logs(_: str = Depends(admin_auth)):
+    flush_outbox(log_to_google_sheet, force=True)
+    return logging_status()
 
 
 @app.get("/api/admin/corrections", response_model=CorrectionListResponse)
@@ -2984,7 +3058,7 @@ def admin_sync_cognition_status(_: str = Depends(admin_auth)) -> dict:
 
 
 @app.get("/api/cognition/image/{file_id}")
-def public_cognition_image(file_id: str) -> Response:
+def public_cognition_image(file_id: str, _: str = Depends(admin_auth)) -> Response:
     """Serve a COGNITION chart image from Google Drive through the bot backend."""
     clean_file_id = re.sub(r"[^A-Za-z0-9_-]", "", file_id or "")
     if not clean_file_id:
@@ -3161,6 +3235,8 @@ def public_youtube_transcript_html(video_id: str) -> HTMLResponse:
     clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
     if not clean_video_id:
         raise HTTPException(status_code=404, detail="Transcript not found.")
+    if not _hubspot_transcript_url_for_video(clean_video_id):
+        raise HTTPException(status_code=404, detail="Published transcript not found.")
 
     media_items = _load_youtube_videos() + _load_podcast_videos()
     video = next(
@@ -3196,6 +3272,8 @@ def public_youtube_transcript(video_id: str) -> Response:
     clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id or "")
     if not clean_video_id:
         raise HTTPException(status_code=404, detail="Transcript not found.")
+    if not _hubspot_transcript_url_for_video(clean_video_id):
+        raise HTTPException(status_code=404, detail="Published transcript not found.")
 
     media_items = _load_youtube_videos() + _load_podcast_videos()
     video = next(
@@ -3431,7 +3509,7 @@ def _transcript_records_for_public_pages() -> list[dict[str, Any]]:
             continue
 
         clean_video_id = re.sub(r"[^A-Za-z0-9_-]", "", video_id)
-        if not clean_video_id or clean_video_id in seen_video_ids:
+        if not clean_video_id or clean_video_id in seen_video_ids or not _hubspot_transcript_url_for_video(clean_video_id):
             continue
 
         seen_video_ids.add(clean_video_id)
@@ -3665,15 +3743,15 @@ from fastapi import UploadFile, File
 from fastapi.staticfiles import StaticFiles
 import shutil
 
-MAGAZINE_DIR = Path("/data/magazines")
+MAGAZINE_DIR = settings.data_dir / "magazines"
 MAGAZINE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Safe upload folders. Uploads land in pdf_inbox only.
 # They do NOT automatically ingest or touch the live chatbot index.
-PDF_INBOX_DIR = Path("/data/pdf_inbox")
-PDF_PROCESSING_DIR = Path("/data/pdf_processing")
-PDF_DONE_DIR = Path("/data/pdf_done")
-PDF_FAILED_DIR = Path("/data/pdf_failed")
+PDF_INBOX_DIR = settings.data_dir / "pdf_inbox"
+PDF_PROCESSING_DIR = settings.data_dir / "pdf_processing"
+PDF_DONE_DIR = settings.data_dir / "pdf_done"
+PDF_FAILED_DIR = settings.data_dir / "pdf_failed"
 
 for _folder in [PDF_INBOX_DIR, PDF_PROCESSING_DIR, PDF_DONE_DIR, PDF_FAILED_DIR]:
     _folder.mkdir(parents=True, exist_ok=True)
@@ -4116,13 +4194,17 @@ def clean_unused_pdfs(_: str = Depends(admin_auth)) -> dict:
 
 
 @app.post("/admin/upload-magazine")
-async def upload_magazine(files: List[UploadFile] = File(...)):
+async def upload_magazine(files: List[UploadFile] = File(...), _: str = Depends(admin_auth)):
     uploaded = []
     skipped = []
     require_data_disk_space(1.0)
 
     for file in files:
         filename = file.filename or ""
+        if Path(filename).name != filename or any(c in filename for c in ("/", "\\", ":")):
+            raise HTTPException(400, "Invalid PDF filename.")
+        if (file.size or 0) > 100 * 1024 * 1024:
+            raise HTTPException(413, "PDF exceeds the 100 MB limit.")
         if not filename.lower().endswith(".pdf"):
             skipped.append(filename)
             continue
@@ -4343,9 +4425,9 @@ async def upload_draft_html(files: List[UploadFile] = File(...), _: str = Depend
 
 
 # === Serve Generated Assets and Magazine PDFs Already Ingested ===
-ASSETS_DIR = Path("/data/assets")
+ASSETS_DIR = settings.data_dir / "assets"
 (ASSETS_DIR / "thumbs").mkdir(parents=True, exist_ok=True)
 (ASSETS_DIR / "covers").mkdir(parents=True, exist_ok=True)
 
 app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
-app.mount("/magazines", StaticFiles(directory="/data/magazines"), name="magazines")
+app.mount("/magazines", StaticFiles(directory=str(MAGAZINE_DIR)), name="magazines")
