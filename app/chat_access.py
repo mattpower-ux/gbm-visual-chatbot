@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -28,8 +29,16 @@ def secret():
 
 
 def fingerprint(request):
-    # Uvicorn resolves trusted proxy headers. Never trust a client-supplied XFF here.
-    address = request.client.host if request.client else "unknown"
+    if os.getenv("RENDER") == "true":
+        # Render's public ingress is Cloudflare-only. XFF (and Uvicorn's
+        # derived client) can contain caller input; use the edge-replaced IP.
+        # Never enable this trust model on a directly accessible origin.
+        try:
+            address = str(ipaddress.ip_address(request.headers.get("cf-connecting-ip", "")))
+        except ValueError:
+            raise HTTPException(503, "Unable to verify the connection. Please try again shortly.") from None
+    else:
+        address = request.client.host if request.client else "unknown"
     return hmac.new(secret(), address.encode(), hashlib.sha256).hexdigest()
 
 

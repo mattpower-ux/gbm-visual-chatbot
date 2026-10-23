@@ -19,6 +19,39 @@ PRIVATE = dict(PUBLIC, id='secret', text='CONFIDENTIAL-SENTINEL', visibility='pr
 ORIGINAL_SHEET_WRITER = main.log_to_google_sheet
 
 
+def test_render_fingerprint_uses_edge_address_not_forwarded_client(monkeypatch):
+    from starlette.requests import Request
+    monkeypatch.setenv('RENDER', 'true')
+    def request(client_ip, edge_ip):
+        return Request({'type': 'http', 'client': (client_ip, 0), 'headers': [
+            (b'cf-connecting-ip', edge_ip.encode()),
+            (b'x-forwarded-for', client_ip.encode()),
+        ]})
+    first = chat_access.fingerprint(request('198.51.100.1', '203.0.113.10'))
+    assert chat_access.fingerprint(request('198.51.100.2', '203.0.113.10')) == first
+    assert chat_access.fingerprint(request('198.51.100.1', '203.0.113.11')) != first
+
+
+@pytest.mark.parametrize('edge_ip', ['', 'not-an-ip', '203.0.113.1, 203.0.113.2'])
+def test_render_missing_or_invalid_edge_identity_fails_closed(monkeypatch, edge_ip):
+    from starlette.requests import Request
+    monkeypatch.setenv('RENDER', 'true')
+    request = Request({'type': 'http', 'client': ('198.51.100.1', 0),
+                       'headers': [(b'cf-connecting-ip', edge_ip.encode())]})
+    with pytest.raises(HTTPException) as error:
+        chat_access.fingerprint(request)
+    assert error.value.status_code == 503
+
+
+def test_non_render_ignores_edge_headers(monkeypatch):
+    from starlette.requests import Request
+    monkeypatch.delenv('RENDER', raising=False)
+    def request(edge_ip):
+        return Request({'type': 'http', 'client': ('198.51.100.1', 0),
+                        'headers': [(b'cf-connecting-ip', edge_ip.encode())]})
+    assert chat_access.fingerprint(request('203.0.113.10')) == chat_access.fingerprint(request('203.0.113.11'))
+
+
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(main.settings, 'data_dir', tmp_path)

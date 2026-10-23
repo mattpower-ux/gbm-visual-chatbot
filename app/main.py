@@ -670,7 +670,7 @@ def filter_to_future_event_chunks(chunks: list[dict[str, Any]]) -> list[dict[str
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "release": os.getenv("RENDER_GIT_COMMIT", "local")}
 
 
 @app.get("/widget.js")
